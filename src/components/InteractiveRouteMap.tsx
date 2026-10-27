@@ -1,18 +1,41 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { confirmLiveRequest } from '../services/confirmLiveRequest';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Animated,
   StyleSheet,
   TouchableOpacity,
   View,
 } from 'react-native';
-import Svg, { Circle, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
-import { Coordinate, Location, PickupArrangement, RouteGeometry } from '../types/domain';
+import Svg, {
+  Circle,
+  Line,
+  Path,
+  Rect,
+  Text as SvgText,
+} from 'react-native-svg';
+import {
+  Coordinate,
+  Location,
+  PickupArrangement,
+  RouteGeometry,
+} from '../types/domain';
 import { colors as c } from '../theme';
-import { Badge, Copy, Row } from './ui';
-import { calculateRoute, computeOfflineRoute } from '../services/routing';
-import { isDemoModeActive } from '../services/apiQuota';
-import { useApp } from '../state/AppContext';
+import { Badge, Button, Copy, Row } from './ui';
+import { calculateRoute } from '../services/routing';
+import {
+  liveRoutingActive,
+  routingVersion,
+  subscribeRouting,
+} from '../services/liveRouting';
 
 export interface InteractiveRouteMapProps {
   pickup: Location;
@@ -22,6 +45,7 @@ export interface InteractiveRouteMapProps {
   compact?: boolean;
   animated?: boolean;
   onRetry?: () => void;
+  agreedRoute?: RouteGeometry;
 }
 
 export function InteractiveRouteMap({
@@ -32,13 +56,16 @@ export function InteractiveRouteMap({
   compact = false,
   animated = true,
   onRetry,
+  agreedRoute,
 }: InteractiveRouteMapProps) {
-  const { state, dispatch } = useApp();
+  useSyncExternalStore(subscribeRouting, routingVersion);
+  const requestSequence = useRef(0);
+  const waypointKey = JSON.stringify(waypoints ?? []);
   const [route, setRoute] = useState<RouteGeometry | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const demoActive = isDemoModeActive(state.apiQuota);
+  const demoActive = liveRoutingActive();
   const pulse = useRef(new Animated.Value(1)).current;
 
   // Pulse animation for active route/pickups
@@ -63,59 +90,79 @@ export function InteractiveRouteMap({
   }, [animated, pulse]);
 
   // Load road route
-  const fetchRoute = useCallback(async () => {
-    if (!pickup.coordinate || !destination.coordinate) {
-      setRoute(null);
-      setError('Coordinates unavailable for this landmark.');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Build points list
-      const points: Coordinate[] = [pickup.coordinate];
-      if (waypoints && waypoints.length > 0) {
-        points.push(...waypoints);
+  const fetchRoute = useCallback(
+    async (explicitRequest = false) => {
+      if (!pickup.coordinate || !destination.coordinate) {
+        setRoute(null);
+        setError('Coordinates unavailable for this landmark.');
+        return;
       }
-      points.push(destination.coordinate);
 
-      // Record quota call
-      dispatch({
-        type: 'RECORD_API_CALL',
-        callType: demoActive ? 'directions' : 'osrm',
-      });
-
-      const res = await calculateRoute(points, {
-        useGoogleDemo: demoActive,
-        timeoutMs: 3500,
-      });
-
-      setRoute(res);
-      if (res.status === 'failed') {
-        setError(res.error ?? 'Unable to calculate road route.');
+      if (
+        agreedRoute &&
+        (demoActive
+          ? agreedRoute.provider === 'google'
+          : agreedRoute.provider !== 'google')
+      ) {
+        setRoute(agreedRoute);
+        setError(null);
+        return;
       }
-    } catch {
-      // Seamlessly fall back
-      const fallback = computeOfflineRoute(
-        [pickup.coordinate, ...(waypoints || []), destination.coordinate],
-      );
-      setRoute(fallback);
-      dispatch({ type: 'RECORD_API_CALL', callType: 'offline' });
-    } finally {
-      setLoading(false);
-    }
-  }, [
-    pickup.coordinate,
-    destination.coordinate,
-    waypoints,
-    demoActive,
-    dispatch,
-  ]);
+      // Mounting, navigation and switching ON must never spend Google quota.
+      if (demoActive && !explicitRequest) {
+        setRoute(null);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+      const sequence = ++requestSequence.current;
+      setLoading(true);
+      setError(null);
+
+      try {
+        // Build points list
+        const points: Coordinate[] = [pickup.coordinate];
+        const routeWaypoints: Coordinate[] = JSON.parse(waypointKey);
+        if (routeWaypoints.length > 0) {
+          points.push(...routeWaypoints);
+        }
+        points.push(destination.coordinate);
+
+        const res = await calculateRoute(points, {
+          useGoogleDemo: demoActive,
+          timeoutMs: 3500,
+        });
+
+        if (sequence !== requestSequence.current) return;
+        setRoute(res);
+        if (res.status === 'failed') {
+          setError(res.error ?? 'Unable to calculate road route.');
+        }
+      } catch {
+        if (sequence !== requestSequence.current) return;
+        setRoute(null);
+        setError(
+          'Route unavailable. Retry or turn Google OFF for demo estimates.',
+        );
+      } finally {
+        if (sequence === requestSequence.current) setLoading(false);
+      }
+    },
+    [
+      pickup.coordinate,
+      destination.coordinate,
+      agreedRoute,
+      waypointKey,
+      demoActive,
+    ],
+  );
 
   useEffect(() => {
     fetchRoute();
+    const sequenceRef = requestSequence;
+    return () => {
+      sequenceRef.current++;
+    };
   }, [fetchRoute]);
 
   // Map coordinate bounding box projection to SVG viewBox (340 x 180)
@@ -187,9 +234,14 @@ export function InteractiveRouteMap({
     }, '');
   }, [projection, route, pickup.coordinate, destination.coordinate]);
 
-  const startPt = pickup.coordinate && projection ? projection.project(pickup.coordinate) : null;
+  const startPt =
+    pickup.coordinate && projection
+      ? projection.project(pickup.coordinate)
+      : null;
   const endPt =
-    destination.coordinate && projection ? projection.project(destination.coordinate) : null;
+    destination.coordinate && projection
+      ? projection.project(destination.coordinate)
+      : null;
 
   return (
     <View
@@ -198,109 +250,178 @@ export function InteractiveRouteMap({
     >
       {/* Provider indicator badge */}
       <View style={styles.headerRow}>
-        {demoActive ? (
-          <Badge>Google Maps Demo Active</Badge>
+        {route?.provider === 'google' ? (
+          <Badge>Google route response</Badge>
         ) : route?.provider === 'osrm' ? (
           <Badge>OSRM Road Network</Badge>
         ) : (
-          <Badge>Offline Bengaluru Topology</Badge>
+          <Badge>Demo estimate · schematic</Badge>
         )}
         {loading && <ActivityIndicator size="small" color={c.primary} />}
       </View>
 
+      {demoActive && !route && !error && (
+        <Copy small>
+          Live routing is ready. No request has been sent for this view.
+        </Copy>
+      )}
+      {demoActive && (
+        <Button
+          label="Fetch live route · up to 1 request"
+          disabled={loading}
+          onPress={async () => {
+            if (await confirmLiveRequest(1)) await fetchRoute(true);
+          }}
+        />
+      )}
       {/* SVG Canvas Map */}
-      <View style={[styles.canvasContainer, { height: mapHeight }]}>
-        <Svg width="100%" height={mapHeight} viewBox={`0 0 ${mapWidth} ${mapHeight}`}>
-          {/* Background & Road Grid Pattern */}
-          <Rect width={mapWidth} height={mapHeight} fill="#F9F6F0" rx={12} />
-          <Line x1={0} y1={mapHeight * 0.3} x2={mapWidth} y2={mapHeight * 0.3} stroke="#EBE4D8" strokeWidth={3} />
-          <Line x1={0} y1={mapHeight * 0.7} x2={mapWidth} y2={mapHeight * 0.7} stroke="#EBE4D8" strokeWidth={3} />
-          <Line x1={mapWidth * 0.25} y1={0} x2={mapWidth * 0.25} y2={mapHeight} stroke="#EBE4D8" strokeWidth={3} />
-          <Line x1={mapWidth * 0.75} y1={0} x2={mapWidth * 0.75} y2={mapHeight} stroke="#EBE4D8" strokeWidth={3} />
-
-          {/* Polyline Route Casing (shadow) */}
-          {svgPathData ? (
-            <Path
-              d={svgPathData}
-              stroke="#D2B48C"
-              strokeWidth={8}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
+      {route?.provider !== 'google' && route?.status !== 'failed' && (
+        <View style={[styles.canvasContainer, { height: mapHeight }]}>
+          <Svg
+            width="100%"
+            height={mapHeight}
+            viewBox={`0 0 ${mapWidth} ${mapHeight}`}
+          >
+            {/* Background & Road Grid Pattern */}
+            <Rect width={mapWidth} height={mapHeight} fill="#F9F6F0" rx={12} />
+            <Line
+              x1={0}
+              y1={mapHeight * 0.3}
+              x2={mapWidth}
+              y2={mapHeight * 0.3}
+              stroke="#EBE4D8"
+              strokeWidth={3}
             />
-          ) : null}
-
-          {/* Polyline Active Road Route */}
-          {svgPathData ? (
-            <Path
-              d={svgPathData}
-              stroke={demoActive ? '#1A73E8' : c.primary}
-              strokeWidth={5}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
+            <Line
+              x1={0}
+              y1={mapHeight * 0.7}
+              x2={mapWidth}
+              y2={mapHeight * 0.7}
+              stroke="#EBE4D8"
+              strokeWidth={3}
             />
-          ) : null}
+            <Line
+              x1={mapWidth * 0.25}
+              y1={0}
+              x2={mapWidth * 0.25}
+              y2={mapHeight}
+              stroke="#EBE4D8"
+              strokeWidth={3}
+            />
+            <Line
+              x1={mapWidth * 0.75}
+              y1={0}
+              x2={mapWidth * 0.75}
+              y2={mapHeight}
+              stroke="#EBE4D8"
+              strokeWidth={3}
+            />
 
-          {/* Intermediate Waypoints (e.g. Sequential stops or Meeting point) */}
-          {waypoints &&
-            projection &&
-            waypoints.map((wp, index) => {
-              const pt = projection.project(wp);
-              return (
-                <React.Fragment key={`wp-${index}`}>
-                  <Circle cx={pt.x} cy={pt.y} r={9} fill={c.surface} stroke={c.primary} strokeWidth={2.5} />
-                  <SvgText
-                    x={pt.x}
-                    y={pt.y + 4}
-                    fontSize={10}
-                    fontWeight="bold"
-                    fill={c.primary}
-                    textAnchor="middle"
-                  >
-                    {index + 2}
-                  </SvgText>
-                </React.Fragment>
-              );
-            })}
+            {/* Polyline Route Casing (shadow) */}
+            {svgPathData ? (
+              <Path
+                d={svgPathData}
+                stroke="#D2B48C"
+                strokeWidth={8}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            ) : null}
 
-          {/* Start Point Marker (Pickup or Meeting point) */}
-          {startPt && (
-            <>
-              <Circle cx={startPt.x} cy={startPt.y} r={11} fill={c.surface} stroke={c.accent} strokeWidth={3} />
-              <Circle cx={startPt.x} cy={startPt.y} r={5} fill={c.accent} />
-              <SvgText
-                x={startPt.x}
-                y={startPt.y - 14}
-                fontSize={10}
-                fontWeight="600"
-                fill={c.text}
-                textAnchor="middle"
-              >
-                1. Pickup
-              </SvgText>
-            </>
-          )}
+            {/* Polyline Active Road Route */}
+            {svgPathData ? (
+              <Path
+                d={svgPathData}
+                stroke={demoActive ? '#1A73E8' : c.primary}
+                strokeWidth={5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            ) : null}
 
-          {/* Destination Marker */}
-          {endPt && (
-            <>
-              <Circle cx={endPt.x} cy={endPt.y} r={12} fill={c.primaryDark} stroke={c.surface} strokeWidth={2.5} />
-              <Circle cx={endPt.x} cy={endPt.y} r={4} fill={c.surface} />
-              <SvgText
-                x={endPt.x}
-                y={endPt.y - 15}
-                fontSize={10}
-                fontWeight="600"
-                fill={c.text}
-                textAnchor="middle"
-              >
-                Destination
-              </SvgText>
-            </>
-          )}
-        </Svg>
-      </View>
+            {/* Intermediate Waypoints (e.g. Sequential stops or Meeting point) */}
+            {waypoints &&
+              projection &&
+              waypoints.map((wp, index) => {
+                const pt = projection.project(wp);
+                return (
+                  <React.Fragment key={`wp-${index}`}>
+                    <Circle
+                      cx={pt.x}
+                      cy={pt.y}
+                      r={9}
+                      fill={c.surface}
+                      stroke={c.primary}
+                      strokeWidth={2.5}
+                    />
+                    <SvgText
+                      x={pt.x}
+                      y={pt.y + 4}
+                      fontSize={10}
+                      fontWeight="bold"
+                      fill={c.primary}
+                      textAnchor="middle"
+                    >
+                      {index + 2}
+                    </SvgText>
+                  </React.Fragment>
+                );
+              })}
+
+            {/* Start Point Marker (Pickup or Meeting point) */}
+            {startPt && (
+              <>
+                <Circle
+                  cx={startPt.x}
+                  cy={startPt.y}
+                  r={11}
+                  fill={c.surface}
+                  stroke={c.accent}
+                  strokeWidth={3}
+                />
+                <Circle cx={startPt.x} cy={startPt.y} r={5} fill={c.accent} />
+                <SvgText
+                  x={startPt.x}
+                  y={startPt.y - 14}
+                  fontSize={10}
+                  fontWeight="600"
+                  fill={c.text}
+                  textAnchor="middle"
+                >
+                  1. Pickup
+                </SvgText>
+              </>
+            )}
+
+            {/* Destination Marker */}
+            {endPt && (
+              <>
+                <Circle
+                  cx={endPt.x}
+                  cy={endPt.y}
+                  r={12}
+                  fill={c.primaryDark}
+                  stroke={c.surface}
+                  strokeWidth={2.5}
+                />
+                <Circle cx={endPt.x} cy={endPt.y} r={4} fill={c.surface} />
+                <SvgText
+                  x={endPt.x}
+                  y={endPt.y - 15}
+                  fontSize={10}
+                  fontWeight="600"
+                  fill={c.text}
+                  textAnchor="middle"
+                >
+                  Destination
+                </SvgText>
+              </>
+            )}
+          </Svg>
+        </View>
+      )}
 
       {/* Failure Handling & Recovery Banner */}
       {error && (
@@ -310,8 +431,9 @@ export function InteractiveRouteMap({
           </Copy>
           <TouchableOpacity
             style={styles.retryButton}
-            onPress={() => {
-              fetchRoute();
+            onPress={async () => {
+              if (demoActive && !(await confirmLiveRequest(1))) return;
+              await fetchRoute(true);
               onRetry?.();
             }}
           >
@@ -322,8 +444,31 @@ export function InteractiveRouteMap({
         </View>
       )}
 
+      {route?.provider === 'google' && (
+        <TouchableOpacity
+          accessibilityRole="link"
+          onPress={() => {
+            const origin = `${pickup.coordinate!.latitude},${
+              pickup.coordinate!.longitude
+            }`;
+            const destinationPoint = `${destination.coordinate!.latitude},${
+              destination.coordinate!.longitude
+            }`;
+            const stops = (waypoints ?? [])
+              .map(p => `${p.latitude},${p.longitude}`)
+              .join('|');
+            Linking.openURL(
+              `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destinationPoint}&travelmode=driving&waypoints=${encodeURIComponent(
+                stops,
+              )}`,
+            ).catch(() => setError('Could not open Google Maps.'));
+          }}
+        >
+          <Copy>Open agreed route in Google Maps ↗</Copy>
+        </TouchableOpacity>
+      )}
       {/* Metrics Bar */}
-      {route && (
+      {route && route.status !== 'failed' && (
         <View style={styles.metricsBar}>
           <Row>
             <View style={styles.metricItem}>
@@ -336,7 +481,9 @@ export function InteractiveRouteMap({
               <Copy small muted>
                 Est. Time
               </Copy>
-              <Copy style={styles.metricValue}>~{route.durationMinutes} min</Copy>
+              <Copy style={styles.metricValue}>
+                ~{route.durationMinutes} min
+              </Copy>
             </View>
             {arrangement && (
               <View style={styles.metricItem}>
@@ -344,7 +491,9 @@ export function InteractiveRouteMap({
                   Arrangement
                 </Copy>
                 <Copy style={styles.metricValue}>
-                  {arrangement.mode === 'common' ? 'Meeting Point' : 'Sequential'}
+                  {arrangement.mode === 'common'
+                    ? 'Meeting Point'
+                    : 'Sequential'}
                 </Copy>
               </View>
             )}
@@ -358,9 +507,9 @@ export function InteractiveRouteMap({
       {/* Attribution Note */}
       <View style={styles.attributionRow}>
         <Copy small muted style={styles.attributionText}>
-          {demoActive
-            ? 'Map data © Google Maps Platform · Gated Demo'
-            : 'Map data © OpenStreetMap contributors · OSRM Road Router'}
+          {route?.provider === 'google'
+            ? 'Google Maps'
+            : 'Illustrative diagram and estimates · not navigation'}
         </Copy>
       </View>
     </View>
@@ -433,6 +582,6 @@ const styles = StyleSheet.create({
     paddingTop: 2,
   },
   attributionText: {
-    fontSize: 10,
+    fontSize: 14,
   },
 });

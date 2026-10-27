@@ -9,6 +9,7 @@ import {
   ChatMessage,
   DemoScenario,
   Location,
+  MatchCandidate,
   PickupArrangement,
   RideDraft,
   RideRequest,
@@ -64,7 +65,13 @@ export type Action =
       location: Location;
     }
   | { type: 'SEARCH'; id: string; now: string }
-  | { type: 'SEARCH_DONE'; rideId: string; now: string }
+  | {
+      type: 'SEARCH_DONE';
+      rideId: string;
+      now: string;
+      matches?: MatchCandidate[];
+      error?: string;
+    }
   | { type: 'REMATCH'; rideId: string; flexibility?: RideDraft['flexibility'] }
   | {
       type: 'JOIN' | 'ACCEPT_DEMO' | 'START' | 'COMPLETE' | 'LEAVE';
@@ -154,7 +161,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         autoTimeoutMinutes: timeout,
         lastCallProvider: action.enabled
           ? 'Google Maps Platform (Demo Mode Activated)'
-          : 'OSRM / OpenStreetMap (Safe Free Mode)',
+          : 'Local demo estimates (Google OFF)',
       },
     };
   }
@@ -337,8 +344,25 @@ export function appReducer(state: AppState, action: Action): AppState {
   }
 
   if (action.type === 'SET_PICKUP_ARRANGEMENT') {
-    if (!group) return state;
-    return update(ride, { ...group, pickupArrangement: action.arrangement });
+    if (
+      !group ||
+      ride.status !== 'GROUP_FORMED' ||
+      action.arrangement.feasible === false
+    )
+      return state;
+    return update(ride, {
+      ...group,
+      pickupMode: action.arrangement.mode,
+      pickupArrangement: action.arrangement,
+      agreedRoute: action.arrangement.route,
+      meetingPoint: action.arrangement.meetingPointCoordinate
+        ? {
+            ...ride.pickup,
+            name: action.arrangement.meetingPointName!,
+            coordinate: action.arrangement.meetingPointCoordinate,
+          }
+        : undefined,
+    });
   }
 
   if (action.type === 'SEARCH_DONE') {
@@ -348,10 +372,12 @@ export function appReducer(state: AppState, action: Action): AppState {
     if (Date.parse(ride.departure) <= Date.parse(action.now)) {
       return update({ ...ride, status: 'EXPIRED' });
     }
-    const matches = demoMatchingService.findMatches(ride, state.scenario);
+    const matches =
+      action.matches ?? demoMatchingService.findMatches(ride, state.scenario);
     return update({
       ...ride,
       matches,
+      routingError: action.error,
       status: matches.length ? 'MATCH_FOUND' : 'NO_MATCH',
     });
   }
@@ -387,7 +413,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       return reject('Group acceptance is already resolved or unavailable.');
     }
     const members = [
-      state.profile,
+      { ...state.profile, coordinate: ride.pickup.coordinate },
       ...ride.matches.map(match => match.student),
     ];
     if (
@@ -404,7 +430,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       ride.destination,
       members,
     );
-    const chosenArrangement = pickupAnalysis.common;
+    const chosenArrangement = pickupAnalysis[pickupAnalysis.recommendedMode];
     const meetingPointLoc = chosenArrangement.meetingPointCoordinate
       ? {
           id: 'meeting-point',
@@ -424,8 +450,9 @@ export function appReducer(state: AppState, action: Action): AppState {
         id: groupId,
         rideId: ride.id,
         members,
-        pickupMode: 'common',
+        pickupMode: chosenArrangement.mode,
         pickupArrangement: chosenArrangement,
+        agreedRoute: chosenArrangement.route,
         meetingPoint: meetingPointLoc,
         status: 'GROUP_FORMED',
         messages: [
@@ -506,12 +533,15 @@ export function appReducer(state: AppState, action: Action): AppState {
       ...group,
       pickupMode: action.mode,
       pickupArrangement: nextArrangement,
+      agreedRoute: nextArrangement.route,
       messages: [
         ...group.messages,
         event(
           `Pickup changed to ${
             action.mode === 'common'
-              ? `the common meeting point (${nextArrangement.meetingPointName ?? 'Campus Main Gate'})`
+              ? `the common meeting point (${
+                  nextArrangement.meetingPointName ?? 'Campus Main Gate'
+                })`
               : 'sequential pickups (stops ordered by road progression)'
           }.`,
           action.now,

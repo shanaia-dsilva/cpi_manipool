@@ -1,4 +1,9 @@
-import { locations, demoProfile, students, matchingConfig } from '../src/data/fixtures';
+import {
+  locations,
+  demoProfile,
+  students,
+  matchingConfig,
+} from '../src/data/fixtures';
 import { Location, Coordinate } from '../src/types/domain';
 import { appReducer, initialState } from '../src/state/reducer';
 import {
@@ -23,7 +28,10 @@ import {
   recordQuotaCall,
   getQuotaGauges,
 } from '../src/services/apiQuota';
-import { rankCandidates, buildRoadCompatibleCandidates } from '../src/services/matching';
+import {
+  rankCandidates,
+  buildRoadCompatibleCandidates,
+} from '../src/services/matching';
 
 describe('Real location coordinates and Bengaluru landmarks', () => {
   it('all standard landmarks possess realistic GPS coordinates in Bengaluru', () => {
@@ -95,7 +103,7 @@ describe('Road-based distance and travel time calculations', () => {
     expect(distanceKm).toBeLessThan(20);
   });
 
-  it('computes realistic road network distance and duration via Bengaluru expressway', () => {
+  it('computes explicitly labeled demo estimates without road evidence', () => {
     const route = computeOfflineRoute([campusCoord, airportCoord]);
     expect(route.status).toBe('fallback');
     expect(route.provider).toBe('offline_bengaluru');
@@ -137,7 +145,9 @@ describe('Pickup arrangement comparison (Common Meeting Point vs Sequential)', (
     );
     expect(meetingPoint).toBeDefined();
     expect(meetingPoint.isPickupSuitable).toBe(true);
-    expect(VERIFIED_MEETING_POINTS.some(p => p.id === meetingPoint.id)).toBe(true);
+    expect(VERIFIED_MEETING_POINTS.some(p => p.id === meetingPoint.id)).toBe(
+      true,
+    );
     // Average walking distance around campus is reasonable (< 1500m)
     expect(averageWalkMeters).toBeGreaterThanOrEqual(0);
     expect(averageWalkMeters).toBeLessThan(2000);
@@ -158,8 +168,8 @@ describe('Pickup arrangement comparison (Common Meeting Point vs Sequential)', (
 
     // Common meeting point metrics
     expect(comparison.common.mode).toBe('common');
-    expect(comparison.common.totalDetourMinutes).toBeLessThan(comparison.sequential.totalDetourMinutes);
-    expect(comparison.common.feasibilityScore).toBeGreaterThanOrEqual(8);
+    expect(comparison.common.evidence).toBe('demo');
+    expect(comparison.common.safetyRating).toContain('unverified');
     expect(comparison.common.pros.length).toBeGreaterThan(0);
     expect(comparison.common.cons.length).toBeGreaterThan(0);
 
@@ -182,7 +192,7 @@ describe('Route compatibility integration with Nathan matching rules', () => {
   const candidatePickup = locations.find(l => l.id === 'kogilu')!;
   const destination = locations.find(l => l.id === 'airport')!;
 
-  it('supplies route overlap and detour minutes based on road routing', () => {
+  it('supplies illustrative demo compatibility (live uses a separate measured adapter)', () => {
     const compat = calculateRouteCompatibility(
       requesterPickup,
       candidatePickup,
@@ -191,12 +201,14 @@ describe('Route compatibility integration with Nathan matching rules', () => {
     expect(compat.pickupKm).toBeGreaterThan(0);
     expect(compat.pickupKm).toBeLessThanOrEqual(matchingConfig.pickupKm);
     expect(compat.detourMinutes).toBeGreaterThan(0);
-    expect(compat.detourMinutes).toBeLessThanOrEqual(matchingConfig.detourMinutes);
+    expect(compat.detourMinutes).toBeLessThanOrEqual(
+      matchingConfig.detourMinutes,
+    );
     expect(compat.routeOverlap).toBeGreaterThanOrEqual(0.65);
     expect(compat.routeOverlap).toBeLessThanOrEqual(1.0);
   });
 
-  it('ranks candidates using road-grounded compatibility metrics', () => {
+  it('ranks demo candidates using illustrative compatibility metrics', () => {
     const req = {
       id: 'req-test',
       userId: 'you',
@@ -276,7 +288,7 @@ describe('Google Maps Demo Mode and API Limits Protection', () => {
     expect(quota.offlineFallbackRequests).toBe(1);
 
     const gauges = getQuotaGauges(quota);
-    expect(gauges.isWithinFreeTier).toBe(true);
+
     expect(gauges.status).toBe('safe');
     expect(gauges.totalGoogleCalls).toBe(3);
     expect(gauges.totalOpenSourceCalls).toBe(2);

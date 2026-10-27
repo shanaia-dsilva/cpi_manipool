@@ -1,4 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import { confirmLiveRequest } from '../services/confirmLiveRequest';
+import {
+  liveRoutingActive,
+  routingVersion,
+  subscribeRouting,
+} from '../services/liveRouting';
+import { findLiveMatches } from '../services/matching';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Alert, Share, StyleSheet, View } from 'react-native';
 import {
   NativeStackNavigationProp,
@@ -27,7 +34,11 @@ import { FareBreakdown, RideSummary } from '../components/RideSummary';
 import { newId, nowISO, useApp } from '../state/AppContext';
 import { quickMessages, vehicleOptions } from '../data/fixtures';
 import { dateLabel, isOpen, money, splitFare } from '../services/journey';
-import { comparePickupArrangements } from '../services/pickupOptimization';
+import {
+  comparePickupArrangements,
+  compareLivePickupArrangements,
+  PickupComparison,
+} from '../services/pickupOptimization';
 import { CarpoolGroup, RideRequest } from '../types/domain';
 import { colors as c } from '../theme';
 import { goMain, openRide } from '../navigation/actions';
@@ -58,6 +69,11 @@ function useRide(rideId: string) {
   return { ...app, ride, group };
 }
 function pickupName(ride: RideRequest, group: CarpoolGroup) {
+  if (
+    group.pickupMode === 'common' &&
+    group.pickupArrangement?.meetingPointName
+  )
+    return group.pickupArrangement.meetingPointName;
   return group.pickupMode === 'common'
     ? ['campus', 'gate'].includes(ride.pickup.id)
       ? 'Campus main gate · meeting area'
@@ -87,25 +103,68 @@ function useLeave(
     );
 }
 export function MatchingScreen({ route, navigation }: Props<'Matching'>) {
-  const { ride, dispatch } = useRide(route.params.rideId);
+  const { ride, state, dispatch } = useRide(route.params.rideId);
   const leave = useLeave(navigation, route.params.rideId);
   useEffect(() => {
     if (!ride) {
       return;
     }
     if (['SEARCHING', 'REMATCHING'].includes(ride.status)) {
-      const timer = setTimeout(
-        () => dispatch({ type: 'SEARCH_DONE', rideId: ride.id, now: nowISO() }),
-        1500,
-      );
-      return () => clearTimeout(timer);
+      let cancelled = false;
+      const timer = setTimeout(async () => {
+        if (!liveRoutingActive() || state.scenario === 'no-match') {
+          dispatch({ type: 'SEARCH_DONE', rideId: ride.id, now: nowISO() });
+          return;
+        }
+        try {
+          const approved = await confirmLiveRequest(
+            state.scenario === 'two-riders' ? 3 : 6,
+          );
+          if (cancelled) return;
+          if (!approved) {
+            dispatch({
+              type: 'SEARCH_DONE',
+              rideId: ride.id,
+              now: nowISO(),
+              matches: [],
+              error:
+                'Live request cancelled. No Google requests sent. Turn Google OFF to use demo matching.',
+            });
+            return;
+          }
+          const matches = await findLiveMatches(ride, state.scenario);
+          if (!cancelled)
+            dispatch({
+              type: 'SEARCH_DONE',
+              rideId: ride.id,
+              now: nowISO(),
+              matches,
+            });
+        } catch (error) {
+          if (!cancelled)
+            dispatch({
+              type: 'SEARCH_DONE',
+              rideId: ride.id,
+              now: nowISO(),
+              matches: [],
+              error:
+                error instanceof Error
+                  ? error.message
+                  : 'Live routing unavailable.',
+            });
+        }
+      }, 1500);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
     }
     if (['MATCH_FOUND', 'NO_MATCH'].includes(ride.status)) {
       navigation.replace('Results', { rideId: ride.id });
     } else {
       navigation.replace('RideDetails', { rideId: ride.id });
     }
-  }, [ride, dispatch, navigation]);
+  }, [ride, state.scenario, dispatch, navigation]);
   if (!ride) {
     return <Missing navigation={navigation} />;
   }
@@ -120,8 +179,8 @@ export function MatchingScreen({ route, navigation }: Props<'Matching'>) {
         <Copy>03 · Comparing routes and detours</Copy>
       </Card>
       <Notice>
-        A short local simulation using deterministic sample riders. No real
-        requests are sent.
+        Sample riders only. With Google ON, road compatibility uses real routing
+        requests; otherwise the results are demo estimates.
       </Notice>
       <Button secondary label="Cancel search" onPress={leave} />
     </Page>
@@ -147,6 +206,12 @@ export function ResultsScreen({ route, navigation }: Props<'Results'>) {
     return (
       <Page back>
         <RideSummary ride={ride} />
+        {ride.routingError && (
+          <Notice>
+            {ride.routingError} Retry, edit locations, or turn Google OFF for
+            demo results.
+          </Notice>
+        )}
         <Button
           label="Resume journey"
           onPress={() => openRide(navigation, ride)}
@@ -171,7 +236,16 @@ export function ResultsScreen({ route, navigation }: Props<'Results'>) {
       <Copy muted>
         {ride.destination.name} · {dateLabel(ride.departure)}
       </Copy>
-      <InteractiveRouteMap pickup={ride.pickup} destination={ride.destination} />
+      {ride.routingError && (
+        <Notice>
+          {ride.routingError} Retry, edit locations, or turn Google OFF for demo
+          estimates.
+        </Notice>
+      )}
+      <InteractiveRouteMap
+        pickup={ride.pickup}
+        destination={ride.destination}
+      />
       {ride.matches.length ? (
         <Card>
           <Badge>Excellent Match · sample riders</Badge>
@@ -305,6 +379,16 @@ export function MatchDetailsScreen({
   );
 }
 export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
+  const modeVersion = useSyncExternalStore(subscribeRouting, routingVersion);
+  const live = liveRoutingActive();
+  const [measured, setMeasured] = useState<PickupComparison>();
+  const [checking, setChecking] = useState(false);
+  const [comparisonError, setComparisonError] = useState('');
+  useEffect(() => {
+    setMeasured(undefined);
+    setComparisonError('');
+  }, [modeVersion]);
+
   const { ride, group, state, dispatch } = useRide(route.params.rideId);
   const leave = useLeave(navigation, route.params.rideId);
   if (!ride || !group) {
@@ -323,19 +407,18 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
       </Page>
     );
   }
-  const pickupAnalysis = comparePickupArrangements(
-    ride.pickup,
-    ride.destination,
-    group.members,
-  );
+  const pickupAnalysis =
+    (live ? measured : undefined) ??
+    comparePickupArrangements(ride.pickup, ride.destination, group.members);
   const activeArrangement =
-    group.pickupMode === 'common'
+    group.pickupArrangement ??
+    (group.pickupMode === 'common'
       ? pickupAnalysis.common
-      : pickupAnalysis.sequential;
+      : pickupAnalysis.sequential);
   const sequentialWaypoints =
     group.pickupMode === 'sequential'
-      ? pickupAnalysis.sequential.stops
-          .slice(1)
+      ? activeArrangement.stops
+          .filter(stop => stop.studentId !== state.profile.id)
           .map(stop => stop.coordinate)
       : undefined;
 
@@ -353,6 +436,7 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
         destination={ride.destination}
         waypoints={sequentialWaypoints}
         arrangement={activeArrangement}
+        agreedRoute={group.agreedRoute}
       />
       <Card>
         <Heading>{group.members.length} demo riders</Heading>
@@ -376,35 +460,83 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
           )}
         </Copy>
         <Notice>{pickupAnalysis.recommendationSummary}</Notice>
+        {live && (
+          <Button
+            label={
+              checking
+                ? 'Comparing road routes…'
+                : 'Compare real pickup routes (up to 7 calls)'
+            }
+            disabled={checking || ride.status !== 'GROUP_FORMED'}
+            onPress={async () => {
+              if (!(await confirmLiveRequest(7))) return;
+              setChecking(true);
+              setComparisonError('');
+              try {
+                setMeasured(
+                  await compareLivePickupArrangements(
+                    ride.pickup,
+                    ride.destination,
+                    group.members,
+                  ),
+                );
+              } catch (error) {
+                setComparisonError(
+                  error instanceof Error ? error.message : 'Comparison failed.',
+                );
+              } finally {
+                setChecking(false);
+              }
+            }}
+          />
+        )}
+        {!!comparisonError && <Notice>{comparisonError}</Notice>}
+        {live && !measured && (
+          <Copy>
+            Compare live routes before choosing an arrangement. Existing values
+            are demo estimates.
+          </Copy>
+        )}
         <Choice
           label="Common meeting point"
-          detail={`Approx. ${pickupAnalysis.common.averageWalkingDistanceMeters} m walk per rider · ${pickupAnalysis.common.totalDetourMinutes} min vehicle detour (${pickupAnalysis.common.meetingPointName ?? 'Campus Main Gate'})`}
+          detail={`Approx. ${
+            pickupAnalysis.common.averageWalkingDistanceMeters
+          } m walk per rider · ${
+            pickupAnalysis.common.totalDetourMinutes
+          } min vehicle detour (${
+            pickupAnalysis.common.meetingPointName ?? 'Campus Main Gate'
+          })`}
           selected={group.pickupMode === 'common'}
-          disabled={ride.status !== 'GROUP_FORMED'}
+          disabled={
+            ride.status !== 'GROUP_FORMED' ||
+            checking ||
+            (live && !measured) ||
+            pickupAnalysis.common.feasible === false
+          }
           onPress={() =>
             dispatch({
-              type: 'PICKUP',
+              type: 'SET_PICKUP_ARRANGEMENT',
               rideId: ride.id,
-              mode: 'common',
-              now: nowISO(),
+              arrangement: pickupAnalysis.common,
             })
           }
         />
         <Choice
           label="Sequential pickups (Ordered route)"
-          detail={`${group.members
-            .map(member => member.name)
+          detail={`${pickupAnalysis.sequential.stops
+            .map(stop => stop.studentName)
             .join(' → ')} · approx. ${
             pickupAnalysis.sequential.totalDetourMinutes
           } min detour (${pickupAnalysis.sequential.totalDetourKm} km)`}
           selected={group.pickupMode === 'sequential'}
-          disabled={ride.status !== 'GROUP_FORMED'}
+          disabled={
+            ride.status !== 'GROUP_FORMED' || checking || (live && !measured)
+          }
           onPress={() =>
             dispatch({
-              type: 'PICKUP',
+              type: 'SET_PICKUP_ARRANGEMENT',
               rideId: ride.id,
-              mode: 'sequential',
-              now: nowISO(),
+              arrangement: pickupAnalysis.sequential,
             })
           }
         />
@@ -420,6 +552,7 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
       {ride.status === 'GROUP_FORMED' ? (
         <Button
           label="Choose Cab / Auto"
+          disabled={live && group.pickupArrangement?.evidence !== 'google'}
           onPress={() => navigation.navigate('ChooseRide', { rideId: ride.id })}
         />
       ) : (
@@ -669,6 +802,14 @@ export function ActiveRideScreen({ route, navigation }: Props<'ActiveRide'>) {
             : ride.pickup
         }
         destination={ride.destination}
+        agreedRoute={group.agreedRoute}
+        waypoints={
+          group.pickupMode === 'sequential'
+            ? group.pickupArrangement?.stops
+                .filter(stop => stop.studentId !== ride.userId)
+                .map(stop => stop.coordinate)
+            : undefined
+        }
       />
       <Card>
         <Heading>{group.booking.option.name} · demo</Heading>
@@ -725,6 +866,14 @@ export function CompletedScreen({ route, navigation }: Props<'Completed'>) {
             : ride.pickup
         }
         destination={ride.destination}
+        agreedRoute={group.agreedRoute}
+        waypoints={
+          group.pickupMode === 'sequential'
+            ? group.pickupArrangement?.stops
+                .filter(stop => stop.studentId !== ride.userId)
+                .map(stop => stop.coordinate)
+            : undefined
+        }
       />
       <Card>
         <Heading>{ride.destination.name}</Heading>

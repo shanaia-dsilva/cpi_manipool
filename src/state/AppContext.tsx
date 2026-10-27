@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useReducer } from 'react';
+import { expireLiveRouting } from '../services/liveRouting';
+import React, { createContext, useContext, useEffect, useReducer } from 'react';
 import { Action, appReducer, initialState } from './reducer';
 import { AppState } from '../types/domain';
 const Context = createContext<
@@ -6,6 +7,10 @@ const Context = createContext<
 >(undefined);
 export function AppProvider({ children }: React.PropsWithChildren) {
   const [state, dispatch] = useReducer(appReducer, undefined, initialState);
+  useEffect(() => {
+    const timer = setInterval(expireLiveRouting, 1000);
+    return () => clearInterval(timer);
+  }, []);
   return (
     <Context.Provider value={{ state, dispatch }}>{children}</Context.Provider>
   );

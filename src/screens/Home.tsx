@@ -1,5 +1,11 @@
-import React, { useState } from 'react';
-import { Alert, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useSyncExternalStore, useState } from 'react';
+import {
+  Alert,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
@@ -37,7 +43,11 @@ import { newId, nowISO, useApp } from '../state/AppContext';
 import { departureFromDraft, isOpen, validateDraft } from '../services/journey';
 import { openRide } from '../navigation/actions';
 import { getDeviceLocationWithFallback } from '../services/location';
-import { isDemoModeActive } from '../services/apiQuota';
+import {
+  liveRoutingActive,
+  routingVersion,
+  subscribeRouting,
+} from '../services/liveRouting';
 import { colors as c } from '../theme';
 
 export function JourneyForm() {
@@ -46,7 +56,8 @@ export function JourneyForm() {
   const [error, setError] = useState<string>();
   const draft = state.draft;
   const current = state.rides.find(ride => isOpen(ride.status));
-  const demoActive = isDemoModeActive(state.apiQuota);
+  useSyncExternalStore(subscribeRouting, routingVersion);
+  const demoActive = liveRoutingActive();
 
   const chooseDate = (mode: 'date' | 'time') =>
     DateTimePickerAndroid.open({
@@ -122,8 +133,11 @@ export function JourneyForm() {
           ) : (
             <Shield size={14} color="#2E7D32" />
           )}
-          <Copy small style={demoActive ? styles.apiModeActive : styles.apiModeSafe}>
-            {demoActive ? 'Google Maps Demo Active' : 'Safe Routing Mode (OSRM)'}
+          <Copy
+            small
+            style={demoActive ? styles.apiModeActive : styles.apiModeSafe}
+          >
+            {demoActive ? 'Live Google routing' : 'Local demo estimates'}
           </Copy>
           <Gauge size={14} color={c.accent} style={styles.apiGaugeIcon} />
         </Row>
@@ -193,7 +207,8 @@ export function HomeScreen() {
   const upcoming = state.rides.find(ride =>
     ['GROUP_FORMED', 'RIDE_BOOKED', 'IN_PROGRESS'].includes(ride.status),
   );
-  const demoActive = isDemoModeActive(state.apiQuota);
+  useSyncExternalStore(subscribeRouting, routingVersion);
+  const demoActive = liveRoutingActive();
 
   return (
     <Page>
@@ -203,9 +218,7 @@ export function HomeScreen() {
           onPress={() => navigation.navigate('ApiQuota')}
           accessibilityLabel="Open API controls"
         >
-          <Badge>
-            {demoActive ? 'GMaps Demo On' : 'Safe Mode (OSRM)'}
-          </Badge>
+          <Badge>{demoActive ? 'GMaps Demo On' : 'Google OFF · Demo'}</Badge>
         </TouchableOpacity>
       </View>
       <Kicker>Hello, {state.profile.name.split(' ')[0]}</Kicker>
@@ -249,7 +262,7 @@ export function HomeScreen() {
         </>
       )}
       <Copy small muted>
-        Bengaluru road-network estimates. Quotas protected by Shanaia's Demo Guard.
+        Demo estimates unless live Google routing is enabled.
       </Copy>
     </Page>
   );
@@ -345,7 +358,7 @@ export function LocationSearchScreen({
           : 'Choose a destination'}
       </Title>
       <Copy muted>
-        Select verified campus pickup bays, transit hubs, or use device GPS.
+        Select preset campus pickup bays, transit hubs, or use device GPS.
       </Copy>
       <TextInput
         accessibilityLabel="Search demo locations"
@@ -370,7 +383,7 @@ export function LocationSearchScreen({
 
       <Button
         secondary
-        label="Use campus main gate (safe pickup bay)"
+        label="Use campus main gate (candidate pickup)"
         onPress={() => {
           dispatch({
             type: 'DRAFT',
@@ -410,7 +423,8 @@ export function LocationSearchScreen({
       ))}
       {!options.length && (
         <Copy muted>
-          No places found matching "{query}". Try "campus", "airport", "metro", or "yelahanka".
+          No places found matching "{query}". Try "campus", "airport", "metro",
+          or "yelahanka".
         </Copy>
       )}
     </Page>
@@ -431,7 +445,8 @@ const uiInput = {
 export function MapPreviewScreen() {
   const { state } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootParams>>();
-  const pickup = getLocation(state.draft.pickupId, state.customPlaces) ?? locations[0];
+  const pickup =
+    getLocation(state.draft.pickupId, state.customPlaces) ?? locations[0];
   const destination =
     getLocation(state.draft.destinationId, state.customPlaces) ?? locations[3];
 
@@ -440,7 +455,8 @@ export function MapPreviewScreen() {
       <Kicker>Road-Network Routing</Kicker>
       <Title>Your journey,{'\n'}on the road.</Title>
       <Copy muted>
-        Calculated using actual Bengaluru arterial road distances and travel times.
+        Calculated using actual Bengaluru arterial road distances and travel
+        times.
       </Copy>
 
       {/* Interactive Road Map */}

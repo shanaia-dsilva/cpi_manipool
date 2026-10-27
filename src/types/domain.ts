@@ -72,6 +72,9 @@ export interface PickupStop {
 }
 
 export interface PickupArrangement {
+  route?: RouteGeometry;
+  evidence?: 'google' | 'demo';
+  feasible?: boolean;
   mode: 'common' | 'sequential';
   title: string;
   meetingPointName?: string;
@@ -104,6 +107,7 @@ export interface MatchCandidate {
 }
 
 export interface RideRequest {
+  routingError?: string;
   id: string;
   userId: string;
   pickup: Location;

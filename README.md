@@ -4,27 +4,19 @@
 
 A native Android-first React Native/TypeScript CPI prototype for the MAHE Bengaluru community. Students can find compatible sample riders, agree a pickup, coordinate a shared journey, and demonstrate a complete ride lifecycle.
 
-This public repository is a fresh implementation based on the supplied project requirements. It does not include or modify the team's inaccessible private repository.
+This repository contains the React Native prototype and a local faculty-demo routing gateway.
 
-## What works
+## Routing and faculty demonstration
 
-- Brief splash, welcome, demo email entry and profile setup.
-- Exactly three main tabs: Home, Rides, Profile.
-- Shared ride form with searchable verified Bengaluru landmarks, real coordinates, native Android date/time pickers, validation, and Exact/±15/±30/±45 minute flexibility.
-- Device location with Android runtime permission handling and safe fallback to campus gate if permission is denied.
-- Road-based routing and distance engine: calculates actual road km, travel time, and polyline curves using OSRM + curated Bengaluru road network.
-- Pickup arrangement comparison: evaluates Common Meeting Point (e.g. Campus Main Gate Security Bay) vs Sequential Pickups with walking distances, detours, safety ratings, and trade-off recommendations.
-- Route compatibility integration for matching: supplies route overlap (0.65–0.98) and detour minutes computed from road routing to Nathan's multi-criteria scoring algorithm.
-- Interactive road map display (`InteractiveRouteMap`) across route preview, matched groups, formed rides, active journey, and completion screens.
-- Multi-tier routing failure resilience: seamless automatic fallback from online OSRM to offline Bengaluru topology, with user recovery options and retry controls.
-- **Dedicated Routing & API Quota Control Screen (`ApiQuotaScreen`):** strictly keeps Google Maps OFF by default to protect against exceeding limits during team development; enables Google Maps exclusively for faculty demonstrations with auto-safety expiration timer and live quota meters.
-- Deterministic matching, no-match/retry/recovery controls, review and explicit mutual acceptance simulation.
-- Group formation, common/sequential pickup selection, local chat, quick messages and departure coordination.
-- Cab/auto capacity checks, exact fare splits, simulated booking confirmation, active ride and completion.
-- Ride history, saved places, local notification preference, local issue reports, confirmed departure/cancellation and reset.
-- Central state guards against invalid transitions, duplicate active requests, duplicate groups/messages and destructive group cancellation.
+Google is **OFF by default**. Normal development uses explicitly labeled local demo estimates and makes no mapping API calls. These estimates are not an offline road graph.
 
-**Demo boundary:** no real identity verification, GPS, geocoding, live riders, realtime messaging, driver tracking, provider booking, payment or push delivery. Sample prices/distances/detours are illustrative estimates. Reports are not sent to staff. State survives screen navigation but is in memory; a process restart clears it. Internet access is needed to install/build and for the development server, not for demo business services.
+The separate **Routing & API status** page connects to the local demo gateway and enables real Google Routes responses for a 15-minute faculty session. The server keeps durable attempt counts and enforces 30/session, 50/day, 100 total and 10/minute caps. Failed requests count; the app cannot reset the budget. Google credentials stay on the server. This is gateway usage, not Google billing-account usage.
+
+Live mode supports road distance/time, road-derived matching metrics, walking-route checks and comparison of pickup orders. Agreed routes open in Google Maps with ordered stops. The built-in schematic is for demo mode only. Local landmark search does not call Places. Android device location has permission handling and an explicit fallback.
+
+**Setup and responsibility-by-responsibility handoff:** [Routing and mapping decision](docs/ROUTING_AND_MAPPING_EVALUATION.md).
+
+The existing sign-in, riders, acceptance, booking, chat, prices and journey lifecycle remain a local simulation. There is no real identity verification, booking, payment or live rider tracking. Journey state is in memory. Live road and physical pickup access checks still require a configured Google project and Android device.
 
 ## Prerequisites
 
@@ -45,8 +37,8 @@ See the [official React Native environment guide](https://reactnative.dev/docs/s
 ## Install and run on Android
 
 ```sh
-git clone https://github.com/vermakkrish/ManiPool.git
-cd ManiPool
+git clone https://github.com/shanaia-dsilva/cpi_manipool.git
+cd cpi_manipool
 npm ci
 npm start
 ```
@@ -57,7 +49,7 @@ Start an emulator in Android Studio's Device Manager (or connect a debugging-ena
 npm run android
 ```
 
-Open the **android/** folder in Android Studio for Gradle sync, native debugging or APK generation. The application ID is `com.mahecarpool`; its visible name is MAHE Carpool. No `.env` file or API credentials are required.
+Open the **android/** folder in Android Studio for Gradle sync, native debugging or APK generation. The application ID is `com.mahecarpool`; its visible name is MAHE Carpool. No credentials are required for default demo mode. Live faculty mode uses the private server configuration described in the routing guide.
 
 Build a debug APK without launching a device:
 
@@ -102,34 +94,17 @@ Tests cover invalid calendar/time/location inputs, past requests, windows across
 
 GitHub Actions runs TypeScript, zero-warning lint, Jest and Metro checks. A separate job builds an Android x86_64 debug APK and uploads it for emulator use. [Run 38145193383](https://github.com/vermakkrish/ManiPool/actions/runs/38145193383) passed both jobs, including native `assembleDebug`. Its `mahe-carpool-debug-x86_64` artifact requires an x86_64 emulator and Metro; it is not a standalone release or an ARM phone build. See [the verification record](docs/VERIFICATION.md) for observed results and remaining device checks.
 
-## Implementation and future integration
+## Implementation and integration
 
-```text
-App.tsx                             Auth/native stack, Home/Rides/Profile tabs & API Quota route
-src/navigation/types.ts             Strong route parameters
-src/theme/                          Central palette, typography, spacing, radii
-src/components/                     InteractiveRouteMap, accessible controls, cards, avatars
-src/data/fixtures.ts                Coordinates, Bengaluru landmarks, pickup points, fares
-src/services/routing.ts             Road distances, OSRM/Google/Offline router, compatibility
-src/services/pickupOptimization.ts  Meeting point selection, sequential ordering, comparison
-src/services/location.ts            Android location permissions, GPS fallback to campus gate
-src/services/apiQuota.ts            Google Maps demo gate, call tracking, quota limits, costs
-src/services/matching.ts            Road-grounded matching adapter & rankCandidates
-src/services/journey.ts             Validation, windows/lifecycle helpers, exact fare split
-src/state/reducer.ts                Single source of truth for all domain operations
-src/state/AppContext.tsx            React context/reducer shared across navigation
-src/screens/ApiQuotaScreen.tsx      Shanaia's API quota dashboard & demo mode gatekeeper
-src/screens/                        Auth, home/location, journey and account screens
-__tests__/                          Domain, routing optimization & mocked-native interaction tests
-docs/ROUTING_AND_MAPPING_EVALUATION.md Detailed mapping & routing evaluation report
-android/                            Actual native Android project and Gradle wrapper
-```
+- `server/routing-server.cjs`: authenticated Google Routes gateway and durable quota reservation.
+- `src/services/liveRouting.ts`: memory-only access token/session, expiry and concurrent request coalescing.
+- `src/services/routing.ts`: explicit demo/live routing and measured compatibility adapter.
+- `src/services/pickupOptimization.ts`: meeting-point and pickup-order comparison.
+- `src/screens/ApiQuotaScreen.tsx`: mode switch and server status/usage.
+- `src/components/InteractiveRouteMap.tsx`: demo schematic, route metrics, failure recovery and Google Maps link.
+- `src/services/location.ts` and Android `DeviceLocationPackage.kt`: permission and location acquisition.
 
-Lifecycle: `DRAFT → SEARCHING → MATCH_FOUND → WAITING_FOR_ACCEPTANCE → GROUP_FORMED → RIDE_BOOKED → IN_PROGRESS → COMPLETED`, with guarded cancellation, expiry, no-match and rematching paths. Only submitted requests are stored in history; the editable draft lives separately.
-
-Matching filters by time-window overlap, illustrative pickup distance, destination/corridor, route overlap and detour, then ranks and caps the result. The fixture is generated relative to the selected request so presentations are repeatable. It is not a road router or a geospatial proof of compatibility. The weights (route 35%, detour 25%, time 20%, destination 15%, private demo reliability 5%) are configurable, unvalidated starting values. No public reliability score is displayed.
-
-Replace `demoMatchingService` with a FastAPI/geospatial adapter implementing `MatchingService`. For real MAHE auth, persisted PostgreSQL/Supabase data, realtime chat, OSRM routing, push notifications and provider coordination, introduce authenticated API adapters behind the domain operations and hydrate confirmed server results into state. Those services are future integration points, not implemented integrations. Production requires consent/privacy controls, backend validation, actual routing/capacity data and error/retry handling appropriate to those services.
+Run `npm run test:gateway` for isolated quota tests, in addition to the checks above. These tests never use a real Google key.
 
 ## Troubleshooting and known verification limits
 

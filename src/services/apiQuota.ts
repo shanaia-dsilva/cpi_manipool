@@ -1,78 +1,19 @@
 import { ApiQuotaUsage } from '../types/domain';
 
+// Legacy in-memory demo telemetry only. Live budgets are enforced by the gateway.
 export const GOOGLE_QUOTA_LIMITS = {
-  mapsLoads: 28500, // Monthly free tier dynamic map loads on mobile/web
-  placesAutocomplete: 10000, // Autocomplete sessions/per-request limit
-  placesDetails: 5000, // Basic place details
-  directionsRequests: 10000, // Directions / Routes API requests
-  monthlyCreditUsd: 200, // Monthly recurring Google Cloud credit
-  usdToInrRate: 86.5,
+  mapsLoads: 0,
+  placesAutocomplete: 0,
+  placesDetails: 0,
+  directionsRequests: 30,
 };
-
-export const MAPPING_PROVIDERS_EVALUATION = [
-  {
-    id: 'osm_osrm',
-    name: 'OpenStreetMap + OSRM (Default Engine)',
-    role: 'Primary Active System',
-    localCoverage:
-      'High for Bengaluru (All NH 44, Bellary Rd, Outer Ring Rd, Yelahanka roads well-tagged)',
-    hosting:
-      'Free public OSRM server (`router.project-osrm.org`) + embedded offline graph fallback',
-    freeLimits: 'Unlimited for reasonable academic demo use (fair-use policy)',
-    cost: '₹0.00 / Free & Open Source',
-    attribution: '© OpenStreetMap contributors (ODbL license)',
-    status: 'ACTIVE_DEFAULT',
-  },
-  {
-    id: 'google_maps',
-    name: 'Google Maps Platform (Demo Gate)',
-    role: 'Faculty Presentation Mode Only',
-    localCoverage:
-      'Industry benchmark for Bengaluru (Live traffic, building footprints, places)',
-    hosting: 'Cloud SaaS (Google Cloud Platform API Key restricted by SHA-1)',
-    freeLimits:
-      '~$200 monthly credit (28,500 map loads, 10,000 Directions calls)',
-    cost: 'Free within $200 credit; overages billed per 1,000 requests',
-    attribution: 'Google logo & attribution required on map view',
-    status: 'GATED_DEMO_ONLY',
-  },
-  {
-    id: 'maplibre',
-    name: 'MapLibre GL Native / Web',
-    role: 'Open-source Vector Renderer',
-    localCoverage:
-      'Excellent vector styling; requires hosted vector tile source (e.g. Protomaps / MapTiler)',
-    hosting:
-      'Self-hosted PMTiles or free MapTiler tier (100k requests/month)',
-    freeLimits: '100,000 tile requests/month on free tier',
-    cost: 'Free for open-source self-hosting; ~$20/mo managed',
-    attribution: 'MapLibre + OpenStreetMap contributors',
-    status: 'EVALUATED_ALTERNATIVE',
-  },
-  {
-    id: 'tomtom',
-    name: 'TomTom Maps & Routing',
-    role: 'Commercial Navigation Alternative',
-    localCoverage: 'Good coverage across tier-1 Indian metros including BLR',
-    hosting: 'TomTom Developer Cloud API',
-    freeLimits: '2,500 free requests per day (~75,000/month)',
-    cost: 'Free tier available, then pay-as-you-go',
-    attribution: 'TomTom attribution required',
-    status: 'EVALUATED_ALTERNATIVE',
-  },
-];
 
 export function isDemoModeActive(quota: ApiQuotaUsage): boolean {
   if (!quota.googleMapsDemoMode) {
     return false;
   }
-  if (quota.demoModeExpiresAt) {
-    const expires = Date.parse(quota.demoModeExpiresAt);
-    if (Number.isFinite(expires) && Date.now() > expires) {
-      return false; // Auto-expired to protect quota!
-    }
-  }
-  return true;
+  const expires = Date.parse(quota.demoModeExpiresAt ?? '');
+  return Number.isFinite(expires) && Date.now() < expires;
 }
 
 export function recordQuotaCall(
@@ -135,55 +76,17 @@ export function recordQuotaCall(
 }
 
 export function getQuotaGauges(quota: ApiQuotaUsage) {
-  const mapsPct = (quota.googleMapsLoads / GOOGLE_QUOTA_LIMITS.mapsLoads) * 100;
-  const placesPct =
-    (quota.googlePlacesAutocomplete /
-      GOOGLE_QUOTA_LIMITS.placesAutocomplete) *
-    100;
-  const directionsPct =
-    (quota.googleDirectionsRequests /
-      GOOGLE_QUOTA_LIMITS.directionsRequests) *
-    100;
-
-  const maxPct = Math.max(mapsPct, placesPct, directionsPct);
-  const status: 'safe' | 'warning' | 'critical' =
-    maxPct >= 85 ? 'critical' : maxPct >= 50 ? 'warning' : 'safe';
-
-  // Cost estimation (USD and INR)
-  const estimatedCostUsd =
-    (quota.googleMapsLoads / 1000) * 7.0 +
-    (quota.googlePlacesAutocomplete / 1000) * 2.83 +
-    (quota.googleDirectionsRequests / 1000) * 5.0;
-
-  const estimatedCostInr = Math.round(
-    estimatedCostUsd * GOOGLE_QUOTA_LIMITS.usdToInrRate,
-  );
-  const creditRemainingInr = Math.max(
-    0,
-    Math.round(
-      GOOGLE_QUOTA_LIMITS.monthlyCreditUsd *
-        GOOGLE_QUOTA_LIMITS.usdToInrRate -
-        estimatedCostInr,
-    ),
-  );
-
+  const totalGoogleCalls =
+    quota.googleMapsLoads +
+    quota.googlePlacesAutocomplete +
+    quota.googlePlacesDetails +
+    quota.googleDirectionsRequests;
   return {
-    mapsPct: Math.min(100, mapsPct),
-    placesPct: Math.min(100, placesPct),
-    directionsPct: Math.min(100, directionsPct),
-    maxPct: Math.min(100, maxPct),
-    status,
-    estimatedCostInr,
-    creditRemainingInr,
-    isWithinFreeTier: estimatedCostUsd <= GOOGLE_QUOTA_LIMITS.monthlyCreditUsd,
-    totalGoogleCalls:
-      quota.googleMapsLoads +
-      quota.googlePlacesAutocomplete +
-      quota.googlePlacesDetails +
-      quota.googleDirectionsRequests,
+    totalGoogleCalls,
     totalOpenSourceCalls:
       quota.osrmRouteRequests +
       quota.osmTileRequests +
       quota.offlineFallbackRequests,
+    status: totalGoogleCalls >= 30 ? 'critical' : 'safe',
   };
 }

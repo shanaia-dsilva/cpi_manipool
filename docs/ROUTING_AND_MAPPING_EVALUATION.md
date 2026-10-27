@@ -1,89 +1,60 @@
-# Mapping & Routing Approach Evaluation
+# Routing decision and faculty demo handoff
 
-**Author:** Shanaia (Primary Role: Routing, Optimization, and React Native)  
-**Collaborators:** Nathan (Route Compatibility), Prathyush (Map Interface), Sumukh (Backend Routing Integration)  
-**Project:** MAHE Carpool (`ManiPool`) · Native Android CPI Prototype
+Reviewed 27 October 2026. Owner: Shanaia. No optional Google Maps PR was merged.
 
----
+## Decision
 
-## 1. Executive Summary & Chosen Architecture
+Use local, explicitly labeled estimates for everyday development. They use geographic distance and speed assumptions, not an offline road graph. No OSRM, Google, tile or geocoding requests occur in this mode.
 
-The MAHE Carpool prototype requires a robust, cost-effective, and resilient mapping and routing solution for the Bengaluru metropolitan region (specifically the Yelahanka campus, Kempegowda International Airport, and city corridors). 
+For the temporary faculty demo, use Google Routes Compute Routes through the included local gateway. Requests use DRIVE with TRAFFIC_UNAWARE, or WALK for meeting-point access. These are road-based estimates, not live traffic. The mobile application never receives the Google API key. Search remains a local Bengaluru landmark catalogue; Places and map SDK billing are not enabled.
 
-### Architectural Decision: Dual-Tier "Safe Open-Source Default + Gated Demonstration"
+The in-app diagram is a schematic for demo results only. Live results show Google Maps attribution and an explicit link that opens the pickup, ordered intermediate stops and destination in Google Maps. The external application recalculates its display and may choose a different road path. We do not claim an embedded Google map. Google route geometry is not drawn over an unrelated schematic or OSM map.
 
-Rather than depending solely on a proprietary, quota-limited Google Maps API (which risks service interruption, API limit exhaustion, or surprise billing when accessed by multiple team members or CI), the application implements a **Dual-Tier Pluggable Mapping Architecture**:
+## Evaluated services
 
-1. **Default Tier: OpenStreetMap + OSRM + Curated Offline Bengaluru Topology**
-   - **Active by default** for all development, team testing, and automated checks.
-   - **Zero Google API quota consumed**.
-   - Uses Open Source Routing Machine (OSRM) for real road driving geometry, distances, and ETAs.
-   - Includes a deterministic **Offline Bengaluru Road Topology Fallback** that guarantees realistic routes even during poor connectivity or network failure.
-2. **Gated Tier: Google Maps Demonstration Mode**
-   - **Strictly toggled OFF by default**.
-   - Accessible exclusively through Shanaia's dedicated **API Limits & Demonstration Controls Screen** (`ApiQuotaScreen`).
-   - Intended **solely for live faculty demonstrations**.
-   - Protected by an **Auto-Safety Expiration Timer** (15–30 minutes) and real-time quota gauges to ensure team members never accidentally deplete the monthly free allowance ($200 monthly credit).
+| Approach | Local coverage and hosting | Limits and cost | Attribution / decision |
+| --- | --- | --- | --- |
+| Local catalogue + SVG schematic | Finite Bengaluru coordinates; no hosting or network | No API charges; distances are estimates | No third-party map tiles; selected for default demo |
+| Google Routes + Google Maps link | Managed road routing; campus gates and pedestrian access still need field checks | Billing-enabled project, SKU-dependent pricing; enforced demo caps below; no assumed free allowance | Google Maps attribution; selected for live faculty routes |
+| MapLibre + hosted OSM tiles | Renderer only; requires a separately licensed tile source and mobile integration | Tile hosting, storage and transfer are separate costs; use a contracted provider or self-host | Renderer and data attribution; suitable future embedded-map choice |
+| OSRM | Self-host a regional OSM extract; driving routes without live traffic | Server memory, updates and operation cost money; public demo service is not an unlimited production dependency | OSM attribution; future alternative behind the same adapter |
+| Photon / self-hosted Nominatim | Separate search infrastructure and regional indexing | Hosting and maintenance; public Nominatim prohibits autocomplete and has an aggregate 1 request/second maximum | OSM attribution; deferred because local search is sufficient for the bounded demo |
 
----
+Open-source production plan: Prathyush selects a MapLibre-compatible hosted tile plan with explicit quotas, attribution and mobile caching support. Sumukh deploys OSRM using a Karnataka extract and benchmarks memory, latency and route correctness before choosing a machine; no invented hosting-price or latency guarantee. If broader search is needed, deploy Photon or contract a search provider. Keep tiles, search and routes as separate metered services. Do not bulk-download public OSM tiles or use public Nominatim for autocomplete.
 
-## 2. Comparative Evaluation Matrix
+Sources: [Routes usage and billing](https://developers.google.com/maps/documentation/routes/usage-and-billing), [Routes attribution and policies](https://developers.google.com/maps/documentation/routes/policies), [Maps URLs](https://developers.google.com/maps/documentation/urls/get-started), [OSM tiles policy](https://operations.osmfoundation.org/policies/tiles/), [Nominatim policy](https://operations.osmfoundation.org/policies/nominatim/). Check current account-specific Google pricing in Cloud Console; this app does not read billing data.
 
-| Dimension | **OpenStreetMap + OSRM (Active Default)** | **Google Maps Platform (Demo Gate)** | **MapLibre GL + Protomaps** | **TomTom Developer Cloud** | **GraphHopper** |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Map Display** | SVG Vector Projection / Leaflet via WebView. Highly responsive, zero native crashes. | Native Android Maps SDK (`react-native-maps`). Rich 3D buildings and satellite view. | Vector GL tiles via MapLibre React Native bridge. Highly customizable. | Raster/Vector tiles via TomTom Android SDK or WebView. | Raster / Vector web tiles. |
-| **Place Search & Geocoding** | Nominatim / Photon + Curated Bengaluru Landmark Database (with verified coordinates). | Google Places API (New) Autocomplete & Place Details. | Pelias or Photon open-source geocoder. | TomTom Search & Fuzzy Geocoding API. | GraphHopper Geocoding (based on OSM). |
-| **Routing & Directions** | OSRM Driving Profile (`router.project-osrm.org`) with actual road polylines. | Google Routes / Directions API with live traffic simulation. | Self-hosted OSRM or Valhalla routing engine. | TomTom Routing API with traffic density. | GraphHopper Directions API. |
-| **Bengaluru Local Coverage** | **High:** NH 44, Bellary Rd, Outer Ring Rd, and Yelahanka roads are meticulously tagged. | **Exceptional:** Industry benchmark for local alleys, flyovers, and peak traffic congestion. | **High:** Same underlying OpenStreetMap data as OSRM. | **Good:** Solid coverage across major Indian Tier-1 metros. | **High:** OSM-based road topology. |
-| **Hosting & Infra** | Public fair-use endpoint + embedded offline topology. Self-hostable via Docker (~1.2 GB RAM for Karnataka extract). | Fully managed cloud SaaS (Google Cloud Platform). Requires restricted API keys. | Requires self-hosted PMTiles in Cloudflare R2 / AWS S3 or MapTiler cloud account. | Fully managed TomTom cloud APIs. | Self-hosted Java server or commercial GraphHopper cloud. |
-| **Free Limits & Quota** | **Unlimited** for reasonable academic/demo use; zero per-request fee. | **$200/mo credit**: ~28,500 dynamic map loads, 10,000 directions requests, 10,000 autocomplete requests. | MapTiler free tier: 100,000 tile requests/mo. Self-hosted: static storage cost only. | **2,500 free requests/day** (~75,000 requests/mo). | 500 requests/day on free community tier. |
-| **Cost After Limits** | **₹0.00** | $7.00 per 1,000 map loads; $5.00 per 1,000 routes; $2.83 per 1,000 autocompletes. | ~$20/mo managed, or ~$1/mo S3 bandwidth. | $0.50 per 1,000 requests beyond daily cap. | €49/mo minimum commercial plan. |
-| **Attribution Requirement** | `© OpenStreetMap contributors` (ODbL) + OSRM attribution. | Google logo & Google copyright on all map views. | MapLibre + OpenStreetMap contributors. | TomTom logo & copyright. | GraphHopper + OSM contributors. |
+## Running the faculty demo
 
----
+1. Use Node 24 and a folder path without a literal backslash. Install with `npm ci`.
+2. Copy `.env.example` to `.env`. Set a private, random `DEMO_ADMIN_TOKEN` of at least 24 characters, and a server-side `GOOGLE_ROUTES_API_KEY` with Routes API enabled. Restrict the key to Routes API and the server's outbound IP where available. Do not put a web-service key into the Android application.
+3. In Google Cloud, set a low project request quota as an additional account-wide safeguard. Budget alerts alone do not stop billing. Other keys/apps outside this gateway are not counted by its ledger.
+4. Start `npm run demo:server`. The gateway binds only to loopback. It starts with live mode OFF and creates a private ledger at `server/.data/quota.json`. Keep the same ledger across demos. Do not delete it to reset the budget. An exclusive lock prevents simultaneous processes using that path. After a forced crash, verify no gateway is running before manually removing its stale `.lock` file.
+5. For Android USB/emulator, run `adb reverse tcp:8787 tcp:8787`. Start the app normally. On the API status page enter `http://127.0.0.1:8787` and the demo access token, then Connect. For deployment beyond local use, provide authenticated HTTPS and shared transactional storage; this is a single-process demo gateway.
+6. Confirm the displayed counts, then toggle live Google routing ON. Test the campus → airport route. Live requests send pickup/destination coordinates to Google; only demonstrate with consenting participants or sample coordinates.
+7. Matching still uses sample rider identities. In live mode it calculates road compatibility before ranking. The group screen has an explicit real pickup comparison button. Compare, select the feasible arrangement, and open the agreed stops in Google Maps. Leave at least a minute between bursts if the rate cap is reached.
+8. Toggle OFF after the demonstration. App restart loses its live session token; server restart also clears the live session, but retains request counts. Server and client both enforce expiry.
 
-## 3. Practical Plan for Open-Source Software in Production
+Caps: **30 attempts/session, 50 attempts/India-calendar day, 100 attempts/lifetime of ledger, 10 attempts/minute, 15-minute sessions**. Every upstream attempt is counted before transmission, even when Google rejects it or times out. The app cannot reset the ledger. Re-enabling starts a new session only after the old one has ended; daily/lifetime caps still apply. Route limits are enforced at the gateway, not merely displayed in a progress meter. These caps limit this gateway's requests, not the monetary cost of unrelated Google project activity.
 
-For long-term deployment beyond the local prototype, the open-source stack should be provisioned as follows:
+The token is kept only in mobile memory. All gateway endpoints require it. There is no public administration page and no anonymous route endpoint. Requests and upstream bodies containing credentials are not logged.
 
-### 3.1 Hosted Vector Tiles
-- **Option A (Low Cost / Serverless):** Host a `karnataka.pmtiles` archive (~180 MB) on Cloudflare R2 or an AWS S3 bucket with CloudFront. MapLibre GL Native reads PMTiles directly with HTTP Range requests, eliminating the need for a running tile server. Estimated cost: < ₹150/month.
-- **Option B (Managed Open-Source):** Use MapTiler's free academic tier (100,000 requests/month) with standard OpenMapTiles schema.
+## Routing and matching contracts
 
-### 3.2 Place Search & Geocoding
-- **Curated MAHE Database:** Campus gates, student residential hubs (Yelahanka New Town, Kogilu Cross, Bagalur), and major transit nodes (BLR Airport, Yeshwanthpur, Majestic) are verified and stored locally.
-- **Dynamic Search:** Proxy Nominatim/Photon requests through a backend caching layer (Redis) with a 24-hour TTL to respect OSM's 1 req/sec rate limit.
+- `calculateRoute`: validates every stop. OFF returns `provider=offline_bengaluru,status=fallback` with an explicit demo label. This provider name is retained for compatibility; it does not imply a road graph. ON requires a valid gateway session and returns Google road distance, duration and decoded geometry. A failure returns `status=failed`; it never silently invents a Google route. No automatic paid retries.
+- `findLiveMatches` / `calculateLiveCompatibility`: supply Nathan's existing ranker with measured approach distance, the combined-minus-direct duration plus a separately assumed three-minute boarding allowance, and approximate geometry overlap within a 100 m vertex tolerance. Overlap is a heuristic, not shared-road-segment identity. It is not clamped up to the acceptance threshold. A routing failure produces no verified match and a recovery message.
+- `compareLivePickupArrangements`: for up to three riders, shortlist a meeting landmark by minimizing the maximum straight-line walk, then measure its walking routes. Reject it if any walk exceeds 500 m. Compare the two possible non-requester pickup orders using real road duration. This is a bounded candidate search, not a guarantee of the globally best meeting point. Driving detours use the same direct baseline; boarding adds three minutes per stop. Walking time shown is estimated at 75 m/min even when walking distance is routed. Confirm pavement, crossings, accessibility and stopping legality in person.
+- `SET_PICKUP_ARRANGEMENT`: stores the selected arrangement and route in group state, updates the meeting location and locks changes after booking. Active/completed screens reuse the agreed route and stop order.
+- Android location: runtime fine/coarse permissions, fresh location updates, 12-second timeout and accuracy check. Failure explicitly selects the campus gate as a fallback. A GPS point is not automatically marked suitable for pickup. iOS returns an unavailable fallback until a native provider is added.
 
-### 3.3 Road Routing Engine
-- **Self-Hosted OSRM Container:** Run an OSRM backend container (`osrm-routed`) using the Karnataka OSM PBF extract on a ₹400/month DigitalOcean/AWS Lightsail instance (1 vCPU, 2 GB RAM). Response latencies for carpool route queries are typically under 15 ms.
-- **Fallback Guarantee:** The app retains the embedded offline Bengaluru topology router, ensuring 100% operational uptime during connectivity drops.
+## Evidence and boundaries
 
----
+Automated checks use mocked Google responses and exercise the quota boundary without consuming paid calls. Live road correctness for campus→airport, campus→Yeshwanthpur and campus→Majestic must be checked with the configured key and device; synthetic geometry is not completion evidence for those journeys. Landmark coordinates and pickup descriptions inherited from the prototype have not been field-surveyed. There is no guarantee of guards, lighting, CCTV, legal stopping or safe walking.
 
-## 4. Shanaia's Demonstration Mode & API Quota Guard
+For wider release, add publicly accessible terms/privacy pages meeting Google's requirements, device walkthroughs, real rider data/consent and production authentication. This implementation is a temporary local faculty demonstration, not a public transport service.
 
-To solve the specific operational problem:
-> *"make sure no google maps api limits are reached so keep one page for me to view the api limits and turn on gmaps only for demonstration times to prevent other team members from accidentally using and exceeding limits, so i can properly demo the app to the faculty during presentation alone"*
+## Additional billing protection
 
-We designed and implemented the **API Limits & Demonstration Controls Screen** (`ApiQuotaScreen`):
+Enabling live mode only arms the connection: mounting a route screen, changing screens or refreshing local usage never calls Google. Fetching a live route requires an explicit button press and confirmation of up to one request. Live sample matching confirms up to six, and pickup comparison up to seven. Cancelling sends no requests for that operation. An already transmitted request can still complete and count after switching OFF.
 
-### 4.1 Features & Protections
-1. **Strict Gatekeeper:** Google Maps Platform SDK and Directions calls are blocked unless the demo switch is explicitly enabled. All regular app usage defaults to OSRM / OpenStreetMap.
-2. **Auto-Safety Expiration Timer:** When Shanaia enables Google Maps Demo Mode, an automatic expiration countdown begins (default: 15–20 minutes). If Shanaia forgets to toggle it off after the presentation, the app automatically disengages Google Maps, returning to Safe Mode and preventing subsequent team usage from consuming quota.
-3. **Real-Time Visual Quota Gauges:**
-   - **Google Maps SDK Loads:** Live progress gauge out of 28,500 monthly limit.
-   - **Google Places Autocomplete:** Live progress gauge out of 10,000 monthly limit.
-   - **Google Directions / Routes API:** Live progress gauge out of 10,000 monthly limit.
-   - **Color-Coded Status:** Green (<50%), Amber Warning (50%–80%), Red Critical (>80%).
-4. **Estimated Cost Calculator:** Displays current estimated spend in ₹ INR alongside remaining free Google Cloud credits.
-5. **Connectivity Simulation:** A "Simulate Test Route Call" button verifies network routing without navigating through full ride booking screens.
-6. **Usage Reset:** Allows resetting session counters for fresh demo runs.
-
----
-
-## 5. Verification & Completion Evidence
-
-1. **Realistic Bengaluru Journeys:** Verified routes between MAHE Campus (Yelahanka), Kempegowda Airport, Yeshwanthpur Metro, Majestic, and Church Street produce usable road distances, accurate travel times, and smooth polyline geometries.
-2. **Nathan's Matching Integration:** Route overlap percentages (0.65–0.98) and detour minutes are calculated from actual road geometry and supplied directly to Nathan's multi-criteria scoring algorithm.
-3. **Pickup Arrangement Comparison:** Groups can evaluate Common Meeting Points (e.g. Campus Main Gate Security Bay) against Sequential Pickups (ordered curbside stops) with explicit metrics for walking distance, vehicle detour, safety ratings, and trade-off rationale.
-4. **Routing Failure Recovery:** Gracefully recovers from network or service failures by falling back to offline curated Bengaluru topology with a user-friendly retry mechanism.
+The status page shows remaining requests per session/day/overall and usage bars. It does not show an invented rupee balance: bank autopay authorisation, Google billing, and this gateway's request caps are separate. Google Cloud project quotas must also be configured because calls made elsewhere with the key are outside this gateway. Alerts-only budgets are notifications, not spending caps. Status polling reads the local ledger only. No Google credentials are needed to run the automated checks.

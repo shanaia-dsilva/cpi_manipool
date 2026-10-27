@@ -1,441 +1,312 @@
-import React, { useState } from 'react';
+import { confirmLiveRequest } from '../services/confirmLiveRequest';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
+import { Linking, StyleSheet, Switch, TextInput, View } from 'react-native';
 import {
-  Alert,
-  StyleSheet,
-  Switch,
-  View,
-} from 'react-native';
-import {
-  Clock,
-  Shield,
-  Zap,
-} from 'lucide-react-native';
-import {
-  Badge,
   Button,
   Card,
   Copy,
   Heading,
-  Kicker,
   Notice,
   Page,
-  Row,
   Title,
-  ui,
 } from '../components/ui';
-import { colors as c } from '../theme';
-import { useApp } from '../state/AppContext';
 import {
-  GOOGLE_QUOTA_LIMITS,
-  MAPPING_PROVIDERS_EVALUATION,
-  getQuotaGauges,
-  isDemoModeActive,
-} from '../services/apiQuota';
+  configureGateway,
+  expireLiveRouting,
+  GatewayStatus,
+  getGatewayStatus,
+  liveRoutingActive,
+  routingVersion,
+  setLiveRouting,
+  subscribeRouting,
+} from '../services/liveRouting';
 import { calculateRoute } from '../services/routing';
 import { locations } from '../data/fixtures';
 
 export function ApiQuotaScreen() {
-  const { state, dispatch } = useApp();
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
-
-  const quota = state.apiQuota;
-  const demoActive = isDemoModeActive(quota);
-  const gauges = getQuotaGauges(quota);
-
-  // Toggle demo mode with safety confirmation
-  const handleToggleDemoMode = (enable: boolean) => {
-    if (enable) {
-      Alert.alert(
-        'Turn on Google Maps for Presentation?',
-        'This enables live Google Maps Platform calls. Keep it OFF during normal development to strictly prevent team members from exceeding your Google API quota.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Turn On for Demo',
-            onPress: () => {
-              dispatch({
-                type: 'SET_DEMO_MODE',
-                enabled: true,
-                timeoutMinutes: quota.autoTimeoutMinutes,
-              });
-            },
-          },
-        ],
-      );
-    } else {
-      dispatch({ type: 'SET_DEMO_MODE', enabled: false });
-    }
-  };
-
-  // Run safe test call to verify active router
-  const runTestCall = async () => {
-    setTesting(true);
-    setTestResult(null);
+  useSyncExternalStore(subscribeRouting, routingVersion);
+  const [url, setUrl] = useState('http://127.0.0.1:8787');
+  const [token, setToken] = useState('');
+  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState<GatewayStatus>();
+  const [message, setMessage] = useState(
+    'Demo results are local estimates. No mapping service is contacted while live mode is off.',
+  );
+  const [updatedAt, setUpdatedAt] = useState<number>();
+  const [busy, setBusy] = useState(false);
+  const active = liveRoutingActive();
+  useEffect(() => {
+    if (!connected) return;
+    let mounted = true;
+    const timer = setInterval(() => {
+      expireLiveRouting();
+      getGatewayStatus()
+        .then(value => {
+          if (mounted) {
+            setStatus(value);
+            setUpdatedAt(Date.now());
+          }
+        })
+        .catch(() => {
+          if (mounted) {
+            setStatus(undefined);
+            setMessage(
+              'Gateway unreachable. Usage status unavailable; retry connection.',
+            );
+          }
+        });
+    }, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [connected]);
+  const act = async (work: () => Promise<void>) => {
+    setBusy(true);
     try {
-      const from = locations[0]; // Campus
-      const to = locations[3]; // Airport
-      const res = await calculateRoute([from, to], {
-        useGoogleDemo: demoActive,
-        timeoutMs: 3000,
-      });
-
-      dispatch({
-        type: 'RECORD_API_CALL',
-        callType: demoActive ? 'directions' : 'osrm',
-      });
-
-      setTestResult(
-        `✓ Route computed successfully: ${res.distanceKm} km in ${res.durationMinutes} min via ${res.provider.toUpperCase()} (${res.summary})`,
-      );
-    } catch {
-      setTestResult('⚠️ Test call failed. Offline fallback active.');
+      await work();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Connection failed.');
     } finally {
-      setTesting(false);
+      setBusy(false);
     }
   };
-
-  // Reset counters
-  const handleResetCounters = () => {
-    Alert.alert(
-      'Reset API Usage Counters?',
-      'This clears local recorded call counts. Your active mode setting remains unchanged.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset Counters',
-          style: 'destructive',
-          onPress: () => dispatch({ type: 'RESET_API_QUOTA' }),
-        },
-      ],
-    );
-  };
-
   return (
     <Page back>
-      <Kicker>Routing & API Governance</Kicker>
-      <Title>API Limits &{'\n'}Demo Controls</Title>
-      <Copy muted>
-        Designed for Shanaia to prevent accidental Google Maps API usage and
-        safely demonstrate live routing during faculty presentation.
-      </Copy>
-
-      {/* Active Mode Status Card */}
-      <View
-        style={[
-          styles.statusCard,
-          demoActive ? styles.statusCardActive : styles.statusCardSafe,
-        ]}
-      >
-        <Row>
-          {demoActive ? (
-            <Zap color={c.accent} size={28} />
-          ) : (
-            <Shield color="#388E3C" size={28} />
-          )}
-          <View style={ui.flex}>
-            <Heading>
-              {demoActive
-                ? 'Faculty Demo Mode (GMaps Active)'
-                : 'Safe Open-Source Mode (OSRM Active)'}
-            </Heading>
-            <Copy small muted>
-              {demoActive
-                ? 'Google Maps Platform calls enabled for your presentation.'
-                : 'Default safe mode. Zero Google API quota consumed.'}
-            </Copy>
-          </View>
-        </Row>
-
-        <View style={styles.toggleRow}>
-          <View style={ui.flex}>
-            <Heading>Google Maps Demo Switch</Heading>
-            <Copy small muted>
-              Turn on only when presenting to faculty alone
-            </Copy>
-          </View>
-          <Switch
-            value={demoActive}
-            onValueChange={handleToggleDemoMode}
-            trackColor={{ false: c.border, true: c.primary }}
-            thumbColor={c.surface}
-          />
-        </View>
-
-        {demoActive && quota.demoModeExpiresAt && (
-          <View style={styles.timerBox}>
-            <Clock size={16} color={c.accent} />
-            <Copy small style={styles.timerText}>
-              Auto-safety timeout active: reverts to safe mode at{' '}
-              {new Date(quota.demoModeExpiresAt).toLocaleTimeString('en-IN', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Copy>
-          </View>
-        )}
-      </View>
-
-      {/* Quota Usage Dashboard */}
-      <Heading>Google Cloud Monthly Allowance</Heading>
+      <Title>Routing & API status</Title>
       <Card>
-        <Row>
-          <View style={ui.flex}>
-            <Copy small muted>
-              Estimated Cost
-            </Copy>
-            <Heading>₹{gauges.estimatedCostInr}.00</Heading>
-          </View>
-          <View style={ui.flex}>
-            <Copy small muted>
-              Remaining Free Credit
-            </Copy>
-            <Heading>
-              ₹{gauges.creditRemainingInr}.00
-            </Heading>
-          </View>
-          <Badge>
-            {gauges.isWithinFreeTier ? '100% Free Tier' : 'Over Limit'}
-          </Badge>
-        </Row>
-
-        {/* Maps SDK Gauge */}
-        <View style={styles.gaugeContainer}>
-          <Row>
-            <Copy small>Maps SDK Loads</Copy>
-            <Copy small style={styles.gaugeCounter}>
-              {quota.googleMapsLoads} / {GOOGLE_QUOTA_LIMITS.mapsLoads.toLocaleString()}
-            </Copy>
-          </Row>
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                // eslint-disable-next-line react-native/no-inline-styles
-                {
-                  width: `${Math.max(2, gauges.mapsPct)}%`,
-                  backgroundColor: gauges.mapsPct > 80 ? '#D32F2F' : c.primary,
-                },
-              ]}
-            />
-          </View>
-        </View>
-
-        {/* Places Autocomplete Gauge */}
-        <View style={styles.gaugeContainer}>
-          <Row>
-            <Copy small>Places Autocomplete</Copy>
-            <Copy small style={styles.gaugeCounter}>
-              {quota.googlePlacesAutocomplete} /{' '}
-              {GOOGLE_QUOTA_LIMITS.placesAutocomplete.toLocaleString()}
-            </Copy>
-          </Row>
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                // eslint-disable-next-line react-native/no-inline-styles
-                {
-                  width: `${Math.max(2, gauges.placesPct)}%`,
-                  backgroundColor:
-                    gauges.placesPct > 80 ? '#D32F2F' : c.accent,
-                },
-              ]}
-            />
-          </View>
-        </View>
-
-        {/* Directions / Routing API Gauge */}
-        <View style={styles.gaugeContainer}>
-          <Row>
-            <Copy small>Directions / Routes API</Copy>
-            <Copy small style={styles.gaugeCounter}>
-              {quota.googleDirectionsRequests} /{' '}
-              {GOOGLE_QUOTA_LIMITS.directionsRequests.toLocaleString()}
-            </Copy>
-          </Row>
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                // eslint-disable-next-line react-native/no-inline-styles
-                {
-                  width: `${Math.max(2, gauges.directionsPct)}%`,
-                  backgroundColor:
-                    gauges.directionsPct > 80 ? '#D32F2F' : '#1976D2',
-                },
-              ]}
-            />
-          </View>
-        </View>
-
-        <Copy small muted>
-          Total recorded Google API requests: {gauges.totalGoogleCalls}
+        <Heading>
+          {active ? 'Live Google routing ON' : 'Demo results · Google OFF'}
+        </Heading>
+        <Copy>
+          Faculty use only. Live sessions expire after 15 minutes. Google
+          credentials stay on the local server.
         </Copy>
+        <Switch
+          accessibilityLabel="Enable live Google routing"
+          value={active}
+          disabled={busy || !connected}
+          onValueChange={enabled =>
+            act(async () => {
+              setStatus(await setLiveRouting(enabled));
+              setMessage(
+                enabled
+                  ? 'Live routing armed. Turning ON does not call Google. Each live action asks for confirmation.'
+                  : 'Google OFF. Local demo estimates enabled.',
+              );
+            })
+          }
+        />
       </Card>
-
-      {/* Open-Source Engine Activity */}
-      <Heading>Open-Source & Offline Activity</Heading>
+      <Heading>Connect demo gateway</Heading>
+      <TextInput
+        accessibilityLabel="Demo gateway URL"
+        placeholder="Gateway URL"
+        value={url}
+        onChangeText={setUrl}
+        autoCapitalize="none"
+        editable={!active}
+      />
+      <TextInput
+        accessibilityLabel="Demo access token"
+        placeholder="Private demo access token"
+        value={token}
+        onChangeText={setToken}
+        autoCapitalize="none"
+        secureTextEntry
+        editable={!active}
+      />
+      <Button
+        label="Connect / refresh status"
+        disabled={busy || active}
+        onPress={() =>
+          act(async () => {
+            configureGateway(url, token);
+            setStatus(await getGatewayStatus());
+            setUpdatedAt(Date.now());
+            setConnected(true);
+            setMessage('Gateway connected. Toggle live routing on when ready.');
+          })
+        }
+      />
+      <Notice>{message}</Notice>
       <Card>
-        <Row>
-          <View style={ui.flex}>
-            <Copy small muted>
-              OSRM Driving Routes
-            </Copy>
-            <Heading>{quota.osrmRouteRequests} calls</Heading>
-            <Copy small muted>
-              router.project-osrm.org · Free
-            </Copy>
-          </View>
-          <View style={ui.flex}>
-            <Copy small muted>
-              Offline Graph Fallbacks
-            </Copy>
-            <Heading>{quota.offlineFallbackRequests} calls</Heading>
-            <Copy small muted>
-              Bengaluru Topology · 0 net
-            </Copy>
-          </View>
-        </Row>
-        <Copy small muted>
-          Last call provider:{' '}
-          <Copy small style={styles.providerName}>
-            {quota.lastCallProvider || 'None'}
-          </Copy>
+        <Heading>Google bill: not connected</Heading>
+        <Copy>
+          The ₹15,000 autopay authorisation is not this app's spending limit.
+          This app limits requests, not your bank mandate or all activity on
+          your Google account.
         </Copy>
+        <Copy small>
+          No live rupee balance or free-credit balance is available here. Do not
+          interpret unused requests as free requests. Set Google Cloud API
+          quotas as well; alerts-only budgets do not stop spending.
+        </Copy>
+        <Button
+          secondary
+          label="Open Google Cloud billing"
+          onPress={() =>
+            Linking.openURL('https://console.cloud.google.com/billing').catch(
+              () => setMessage('Open Google Cloud billing in your browser.'),
+            )
+          }
+        />
       </Card>
-
-      {/* Action Buttons */}
-      <Button
-        label={testing ? 'Testing...' : 'Simulate Test Route Call'}
-        disabled={testing}
-        onPress={runTestCall}
-      />
-      {testResult && <Notice>{testResult}</Notice>}
-
-      <Button
-        secondary
-        label="Reset Usage Counters"
-        onPress={handleResetCounters}
-      />
-
-      {/* Mapping Approach Evaluation Table (Task 1) */}
-      <Heading>Mapping & Routing Evaluation</Heading>
-      <Copy muted>
-        Comparison of mapping, place search, and routing services evaluated for
-        the MAHE Carpool prototype:
-      </Copy>
-
-      {MAPPING_PROVIDERS_EVALUATION.map(item => (
-        <Card key={item.id}>
-          <Row>
-            <Heading>{item.name}</Heading>
-            <Badge>{item.status}</Badge>
-          </Row>
-          <Copy small>
-            <Copy small style={styles.evalLabel}>
-              Role:{' '}
-            </Copy>
-            {item.role}
+      {!status && (
+        <Notice>
+          Usage unknown until connected. Default gateway caps: 30
+          requests/session, 50/day, 100 overall, 10/minute. Live sessions expire
+          after 15 minutes. These are request caps, not free allowances.
+        </Notice>
+      )}
+      {status && (
+        <Card>
+          <Heading>
+            {status.configured
+              ? 'Google key configured on server'
+              : 'Google key missing on server'}
+          </Heading>
+          <Copy>
+            Server session: {status.active ? 'ON' : 'OFF'} · This app:{' '}
+            {active ? 'ON' : 'OFF'}
+          </Copy>
+          <Heading>
+            {Math.min(
+              status.limits.total - status.total,
+              status.limits.daily - status.daily,
+              status.limits.session - status.session,
+            ) <= 0
+              ? 'STOP · request allowance exhausted'
+              : active
+              ? 'Ready · confirmation required for each action'
+              : 'This app OFF · no new Google requests'}
+          </Heading>
+          {[
+            {
+              label: 'This session',
+              used: status.session,
+              limit: status.limits.session,
+            },
+            {
+              label: `Today · ${status.day} (India)`,
+              used: status.daily,
+              limit: status.limits.daily,
+            },
+            {
+              label: 'Overall · survives restarts',
+              used: status.total,
+              limit: status.limits.total,
+            },
+          ].map(item => (
+            <View key={item.label} style={styles.meter}>
+              <Heading>{item.label}</Heading>
+              <Copy>
+                {Math.max(0, item.limit - item.used)} requests left ·{' '}
+                {item.used} of {item.limit} used
+              </Copy>
+              <View
+                accessibilityRole="progressbar"
+                accessibilityLabel={item.label}
+                accessibilityValue={{ min: 0, max: item.limit, now: item.used }}
+                style={styles.track}
+              >
+                <View
+                  style={[
+                    styles.fill,
+                    item.used >= item.limit
+                      ? styles.exhausted
+                      : item.used >= item.limit * 0.8
+                      ? styles.warning
+                      : styles.available,
+                    {
+                      width: `${Math.min(
+                        100,
+                        (item.used / item.limit) * 100,
+                      )}%`,
+                    },
+                  ]}
+                />
+              </View>
+            </View>
+          ))}
+          <Copy>
+            Rate limit: {status.limits.perMinute} requests/minute. At the rate
+            limit, wait one minute before retrying.
           </Copy>
           <Copy small>
-            <Copy small style={styles.evalLabel}>
-              Local Bengaluru Coverage:{' '}
-            </Copy>
-            {item.localCoverage}
+            Status refreshed:{' '}
+            {updatedAt
+              ? new Date(updatedAt).toLocaleTimeString()
+              : 'Just connected'}
+            . Refresh checks your local gateway only and uses zero Google
+            requests.
           </Copy>
-          <Copy small>
-            <Copy small style={styles.evalLabel}>
-              Hosting / Infrastructure:{' '}
-            </Copy>
-            {item.hosting}
+          <Copy>
+            Expires:{' '}
+            {status.expiresAt
+              ? new Date(status.expiresAt).toLocaleTimeString()
+              : 'OFF'}
           </Copy>
+          <Copy>Last attempt: {status.lastAttempt || 'None'}</Copy>
           <Copy small>
-            <Copy small style={styles.evalLabel}>
-              Free Tier Limits:{' '}
-            </Copy>
-            {item.freeLimits}
-          </Copy>
-          <Copy small>
-            <Copy small style={styles.evalLabel}>
-              Cost Structure:{' '}
-            </Copy>
-            {item.cost}
-          </Copy>
-          <Copy small>
-            <Copy small style={styles.evalLabel}>
-              Attribution Requirement:{' '}
-            </Copy>
-            {item.attribution}
+            Counts include failed requests and survive server/app restarts.
+            These are this gateway's limits, not Google billing totals or
+            free-tier allowances. Maps SDK and Places requests are disabled.
+            Verify project quotas and billing in Google Cloud.
           </Copy>
         </Card>
-      ))}
+      )}
+      <Button
+        label={
+          busy
+            ? 'Checking…'
+            : active
+            ? 'Fetch real campus → airport · up to 1 request'
+            : 'Test local demo route'
+        }
+        disabled={busy}
+        onPress={() =>
+          act(async () => {
+            if (active && !(await confirmLiveRequest(1))) return;
+            const result = await calculateRoute([
+              locations.find(p => p.id === 'campus')!,
+              locations.find(p => p.id === 'airport')!,
+            ]);
+            setMessage(
+              result.status === 'failed'
+                ? result.error!
+                : `${
+                    result.provider === 'google'
+                      ? 'Real Google response'
+                      : 'Demo estimate'
+                  }: ${result.distanceKm.toFixed(1)} km, ${Math.round(
+                    result.durationMinutes,
+                  )} min. ${result.summary}`,
+            );
+            if (connected) setStatus(await getGatewayStatus());
+            setUpdatedAt(Date.now());
+          })
+        }
+      />
+      <Copy small>
+        Live failures never masquerade as successful routes. Switch OFF to use
+        demo estimates, or change locations and retry. There is no usage reset
+        button.
+      </Copy>
     </Page>
   );
 }
 
 const styles = StyleSheet.create({
-  statusCard: {
-    borderWidth: 2,
-    gap: 12,
-  },
-  statusCardSafe: {
-    borderColor: '#81C784',
-    backgroundColor: '#F1F8E9',
-  },
-  statusCardActive: {
-    borderColor: c.accent,
-    backgroundColor: '#FFF8E1',
-  },
-  safeTitle: {
-    color: '#2E7D32',
-  },
-  activeTitle: {
-    color: '#E65100',
-  },
-  toggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: c.border,
-  },
-  timerBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#FFE082',
-    padding: 8,
-    borderRadius: 8,
-  },
-  timerText: {
-    color: '#795548',
-    fontWeight: '600',
-    flex: 1,
-  },
-  gaugeContainer: {
-    marginVertical: 4,
-    gap: 4,
-  },
-  gaugeCounter: {
-    fontWeight: '600',
-  },
-  progressBarBg: {
-    height: 8,
-    backgroundColor: c.border,
-    borderRadius: 4,
+  exhausted: { backgroundColor: '#B42318' },
+  warning: { backgroundColor: '#B54708' },
+  available: { backgroundColor: '#166534' },
+  meter: { gap: 6, marginVertical: 8 },
+  track: {
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#E5E7EB',
     overflow: 'hidden',
   },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  evalLabel: {
-    fontWeight: '700',
-    color: c.text,
-  },
-  providerName: {
-    fontWeight: '600',
-  },
+  fill: { height: 12, borderRadius: 6 },
 });

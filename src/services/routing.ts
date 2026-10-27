@@ -1,3 +1,4 @@
+import { liveRoutingActive, requestLiveRoute } from './liveRouting';
 import { Coordinate, Location, RouteGeometry } from '../types/domain';
 
 // Haversine direct distance in kilometers
@@ -19,7 +20,10 @@ export function haversineDistance(a: Coordinate, b: Coordinate): number {
 }
 
 // Bengaluru arterial corridors speed and road winding factors
-function getBengaluruCorridorProfile(origin: Coordinate, destination: Coordinate) {
+function getBengaluruCorridorProfile(
+  origin: Coordinate,
+  destination: Coordinate,
+) {
   // Check if journey is primarily on the northern NH 44 airport corridor
   const isAirportCorridor =
     (origin.latitude > 13.15 || destination.latitude > 13.15) &&
@@ -35,7 +39,8 @@ function getBengaluruCorridorProfile(origin: Coordinate, destination: Coordinate
   }
 
   // Check if journey involves Yelahanka - Hebbal - Ring Road
-  const isNorthCorridor = origin.latitude > 13.05 && destination.latitude > 13.05;
+  const isNorthCorridor =
+    origin.latitude > 13.05 && destination.latitude > 13.05;
   if (isNorthCorridor) {
     return {
       windingFactor: 1.25,
@@ -79,14 +84,17 @@ function generateCurvedPath(
       (1 - t) * (1 - t) * start.longitude +
       2 * (1 - t) * t * (midLng + perpLng) +
       t * t * end.longitude;
-    points.push({ latitude: Number(lat.toFixed(6)), longitude: Number(lng.toFixed(6)) });
+    points.push({
+      latitude: Number(lat.toFixed(6)),
+      longitude: Number(lng.toFixed(6)),
+    });
   }
 
   points.push(end);
   return points;
 }
 
-// Fallback offline router for Bengaluru using real road topology
+// Deterministic demo estimate, NOT a road graph or a navigable route.
 export function computeOfflineRoute(
   waypoints: Coordinate[],
   summaryHint?: string,
@@ -114,7 +122,8 @@ export function computeOfflineRoute(
     const to = waypoints[i + 1];
     const directKm = haversineDistance(from, to);
     const legRoadKm = directKm * profile.windingFactor;
-    const legMinutes = (legRoadKm / profile.averageSpeedKmh) * 60 + (i > 0 ? 3 : 0);
+    const legMinutes =
+      (legRoadKm / profile.averageSpeedKmh) * 60 + (i > 0 ? 3 : 0);
 
     totalDistanceKm += legRoadKm;
     totalDurationMinutes += legMinutes;
@@ -131,7 +140,9 @@ export function computeOfflineRoute(
     coordinates: fullPolyline,
     distanceKm: Number(Math.max(0.5, totalDistanceKm).toFixed(1)),
     durationMinutes: Math.max(2, Math.round(totalDurationMinutes)),
-    summary: summaryHint ?? profile.summary,
+    summary: `Demo estimate · ${
+      summaryHint ?? profile.summary
+    } · not road routing`,
     provider: 'offline_bengaluru',
     status: 'fallback',
   };
@@ -151,7 +162,10 @@ export function decodePolyline(encoded: string): Coordinate[] {
     let shift = 0;
     let result = 0;
     do {
+      if (index >= len || shift > 30)
+        throw new Error('Invalid route polyline.');
       b = encoded.charCodeAt(index++) - 63;
+      if (b < 0 || b > 63) throw new Error('Invalid route polyline.');
       result |= (b & 0x1f) << shift;
       shift += 5;
     } while (b >= 0x20);
@@ -161,7 +175,10 @@ export function decodePolyline(encoded: string): Coordinate[] {
     shift = 0;
     result = 0;
     do {
+      if (index >= len || shift > 30)
+        throw new Error('Invalid route polyline.');
       b = encoded.charCodeAt(index++) - 63;
+      if (b < 0 || b > 63) throw new Error('Invalid route polyline.');
       result |= (b & 0x1f) << shift;
       shift += 5;
     } while (b >= 0x20);
@@ -179,89 +196,104 @@ export function decodePolyline(encoded: string): Coordinate[] {
 export interface RoutingOptions {
   useGoogleDemo?: boolean;
   timeoutMs?: number;
+  mode?: 'DRIVE' | 'WALK';
 }
-
-// Main road routing calculation with multi-tier fallback
+export function isValidCoordinate(
+  coord: Coordinate | undefined,
+): coord is Coordinate {
+  return (
+    !!coord &&
+    Number.isFinite(coord.latitude) &&
+    Number.isFinite(coord.longitude) &&
+    Math.abs(coord.latitude) <= 90 &&
+    Math.abs(coord.longitude) <= 180
+  );
+}
 export async function calculateRoute(
   locations: (Location | Coordinate)[],
   options: RoutingOptions = {},
 ): Promise<RouteGeometry> {
-  const coords: Coordinate[] = locations
-    .map(loc => ('coordinate' in loc ? loc.coordinate : loc))
-    .filter(
-      (coord): coord is Coordinate =>
-        !!coord &&
-        typeof coord === 'object' &&
-        'latitude' in coord &&
-        Number.isFinite(coord.latitude) &&
-        Number.isFinite(coord.longitude),
+  const coords = locations.map(loc => ('id' in loc ? loc.coordinate : loc));
+  const failure = (error: string): RouteGeometry => ({
+    coordinates: [],
+    distanceKm: 0,
+    durationMinutes: 0,
+    summary: 'Route unavailable',
+    provider: 'offline_bengaluru',
+    status: 'failed',
+    error,
+  });
+  if (coords.length < 2 || !coords.every(isValidCoordinate)) {
+    return failure(
+      'Every stop needs valid coordinates. Choose another location.',
     );
-
-  if (coords.length < 2) {
-    return {
-      coordinates: coords,
-      distanceKm: 0,
-      durationMinutes: 0,
-      summary: 'Invalid or missing route coordinates',
-      provider: 'offline_bengaluru',
-      status: 'failed',
-      error: 'At least two valid locations with coordinates are required.',
-    };
   }
-
-  // Tier 1: If Google Maps Demo Mode is explicitly active
-  if (options.useGoogleDemo) {
-    // In demo mode without external API call or when API key is active
-    // Compute high-fidelity Google-style simulated road coordinates
-    const offlineGoogle = computeOfflineRoute(coords, 'via Google Routes Engine · Bengaluru Live Traffic');
-    return {
-      ...offlineGoogle,
-      provider: 'google',
-      status: 'success',
-    };
-  }
-
-  // Tier 2: Open Source Routing Machine (OSRM) driving profile
+  const points = coords as Coordinate[];
+  const live = options.useGoogleDemo ?? liveRoutingActive();
+  if (!live) return computeOfflineRoute(points);
   try {
-    const coordsQuery = coords.map(c => `${c.longitude},${c.latitude}`).join(';');
-    const url = `https://router.project-osrm.org/route/v1/driving/${coordsQuery}?overview=full&geometries=geojson&steps=true`;
-
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timeout = setTimeout(() => controller?.abort(), options.timeoutMs ?? 3500);
-
-    const response = await fetch(url, {
-      signal: controller?.signal,
-      headers: { Accept: 'application/json' },
-    });
-    clearTimeout(timeout);
-
-    if (response.ok) {
-      const data = await response.json();
-      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-        const route = data.routes[0];
-        const coordinates: Coordinate[] = route.geometry.coordinates.map(
-          ([lng, lat]: [number, number]) => ({ latitude: lat, longitude: lng }),
-        );
-        const distanceKm = Number((route.distance / 1000).toFixed(1));
-        const durationMinutes = Math.max(2, Math.round(route.duration / 60));
-        const summary = route.legs?.[0]?.summary || 'via OSRM Bengaluru Road Network';
-
-        return {
-          coordinates,
-          distanceKm,
-          durationMinutes,
-          summary,
-          provider: 'osrm',
-          status: 'success',
-        };
-      }
-    }
-  } catch {
-    // Network or OSRM request failed - seamlessly drop to Tier 3
+    return await requestLiveRoute(
+      points,
+      options.mode ?? 'DRIVE',
+      decodePolyline,
+    );
+  } catch (error) {
+    return failure(
+      error instanceof Error
+        ? error.message
+        : 'Routing failed. Retry or switch to demo mode.',
+    );
   }
+}
 
-  // Tier 3: Offline Bengaluru Road Network Router
-  return computeOfflineRoute(coords);
+// Road-derived metrics for Nathan. Never accept fallback estimates as live evidence.
+export function compatibilityFromRoutes(
+  direct: RouteGeometry,
+  combined: RouteGeometry,
+  pickup: RouteGeometry,
+) {
+  if (
+    [direct, combined, pickup].some(
+      r => r.status !== 'success' || r.provider !== 'google',
+    )
+  ) {
+    throw new Error('Real routing data is required for live matching.');
+  }
+  const nearby = (point: Coordinate) =>
+    combined.coordinates.some(other => haversineDistance(point, other) <= 0.1);
+  let sharedKm = 0;
+  let geometryKm = 0;
+  for (let i = 1; i < direct.coordinates.length; i++) {
+    const start = direct.coordinates[i - 1];
+    const end = direct.coordinates[i];
+    const length = haversineDistance(start, end);
+    geometryKm += length;
+    if (nearby(start) && nearby(end)) sharedKm += length;
+  }
+  return {
+    routeOverlap: geometryKm ? Math.min(1, sharedKm / geometryKm) : 0,
+    detourMinutes:
+      Math.max(0, combined.durationMinutes - direct.durationMinutes) + 3,
+    pickupKm: pickup.distanceKm,
+    directDistanceKm: direct.distanceKm,
+    combinedDistanceKm: combined.distanceKm,
+  };
+}
+export async function calculateLiveCompatibility(
+  pickup: Location,
+  candidate: Location,
+  destination: Location,
+) {
+  const direct = await calculateRoute([pickup, destination], {
+    useGoogleDemo: true,
+  });
+  const combined = await calculateRoute([pickup, candidate, destination], {
+    useGoogleDemo: true,
+  });
+  const approach = await calculateRoute([pickup, candidate], {
+    useGoogleDemo: true,
+  });
+  return compatibilityFromRoutes(direct, combined, approach);
 }
 
 // Calculate route compatibility (overlap % and detour minutes) for Nathan's matching algorithm
@@ -276,9 +308,18 @@ export function calculateRouteCompatibility(
   directDistanceKm: number;
   combinedDistanceKm: number;
 } {
-  const reqCoord = requesterPickup.coordinate ?? { latitude: 13.1152, longitude: 77.5885 };
-  const candCoord = candidatePickup.coordinate ?? { latitude: 13.1072, longitude: 77.5982 };
-  const destCoord = sharedDestination.coordinate ?? { latitude: 13.1986, longitude: 77.7066 };
+  const reqCoord = requesterPickup.coordinate ?? {
+    latitude: 13.1152,
+    longitude: 77.5885,
+  };
+  const candCoord = candidatePickup.coordinate ?? {
+    latitude: 13.1072,
+    longitude: 77.5982,
+  };
+  const destCoord = sharedDestination.coordinate ?? {
+    latitude: 13.1986,
+    longitude: 77.7066,
+  };
 
   // 1. Distance between the two pickups
   const pickupDirectKm = haversineDistance(reqCoord, candCoord);
@@ -305,7 +346,10 @@ export function calculateRouteCompatibility(
   // If candidate is directly along the corridor to destination, overlap is high (>0.85)
   const overlapRatio = Math.min(
     0.98,
-    Math.max(0.65, Number((1 - detourDistanceKm / (directDistanceKm * 0.45)).toFixed(2))),
+    Math.max(
+      0.65,
+      Number((1 - detourDistanceKm / (directDistanceKm * 0.45)).toFixed(2)),
+    ),
   );
 
   return {

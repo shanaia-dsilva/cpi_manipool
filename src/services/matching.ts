@@ -1,6 +1,14 @@
 import { matchingConfig, students } from '../data/fixtures';
-import { DemoScenario, Location, MatchCandidate, RideRequest } from '../types/domain';
-import { calculateRouteCompatibility } from './routing';
+import {
+  DemoScenario,
+  Location,
+  MatchCandidate,
+  RideRequest,
+} from '../types/domain';
+import {
+  calculateRouteCompatibility,
+  calculateLiveCompatibility,
+} from './routing';
 
 export function windowsOverlap(
   a: string,
@@ -88,7 +96,7 @@ export interface MatchingService {
   findMatches(request: RideRequest, scenario: DemoScenario): MatchCandidate[];
 }
 
-// Computes realistic match candidates using actual Bengaluru road routing compatibility
+// Deterministic demo candidates. Live mode replaces these illustrative metrics.
 export function buildRoadCompatibleCandidates(
   request: RideRequest,
   scenario: DemoScenario,
@@ -101,7 +109,10 @@ export function buildRoadCompatibleCandidates(
 
   return selectedStudents.map((student, index) => {
     // Generate candidate pickup near request with slight realistic spatial offset
-    const reqCoord = request.pickup.coordinate ?? { latitude: 13.1152, longitude: 77.5885 };
+    const reqCoord = request.pickup.coordinate ?? {
+      latitude: 13.1152,
+      longitude: 77.5885,
+    };
     const candCoord = student.coordinate ?? {
       latitude: reqCoord.latitude + (index === 0 ? 0.005 : -0.006),
       longitude: reqCoord.longitude + (index === 0 ? 0.004 : 0.005),
@@ -117,7 +128,7 @@ export function buildRoadCompatibleCandidates(
       isPickupSuitable: true,
     };
 
-    // Calculate actual road compatibility with Nathan's matching algorithm
+    // Calculate demo estimate metadata (not used as live road evidence).
     const compatibility = calculateRouteCompatibility(
       request.pickup,
       candidatePickup,
@@ -125,9 +136,18 @@ export function buildRoadCompatibleCandidates(
     );
 
     // Keep deterministic within safe matching thresholds
-    const safePickupKm = Math.min(matchingConfig.pickupKm, Math.max(0.4, Number((0.6 + index * 0.4).toFixed(1))));
-    const safeDetourMinutes = Math.min(matchingConfig.detourMinutes, Math.max(2, 3 + index));
-    const safeRouteOverlap = Math.max(0.65, Math.min(0.98, Number((0.94 - index * 0.04).toFixed(2))));
+    const safePickupKm = Math.min(
+      matchingConfig.pickupKm,
+      Math.max(0.4, Number((0.6 + index * 0.4).toFixed(1))),
+    );
+    const safeDetourMinutes = Math.min(
+      matchingConfig.detourMinutes,
+      Math.max(2, 3 + index),
+    );
+    const safeRouteOverlap = Math.max(
+      0.65,
+      Math.min(0.98, Number((0.94 - index * 0.04).toFixed(2))),
+    );
 
     return {
       id: `${request.id}-${student.id}`,
@@ -149,10 +169,32 @@ export function buildRoadCompatibleCandidates(
   });
 }
 
-// Fixtures are grounded in realistic road geometry and departure compatibility
+// Repeatable demo fixtures; deliberately independent of live network results.
 export const demoMatchingService: MatchingService = {
   findMatches(request, scenario) {
     const candidates = buildRoadCompatibleCandidates(request, scenario);
     return rankCandidates(request, candidates);
   },
 };
+
+// Keep sample identities, but use actual road evidence in faculty mode.
+export async function findLiveMatches(
+  request: RideRequest,
+  scenario: DemoScenario,
+): Promise<MatchCandidate[]> {
+  const candidates = buildRoadCompatibleCandidates(request, scenario);
+  const measured: MatchCandidate[] = [];
+  for (const candidate of candidates) {
+    const metrics = await calculateLiveCompatibility(
+      request.pickup,
+      candidate.pickupLocation!,
+      request.destination,
+    );
+    measured.push({
+      ...candidate,
+      ...metrics,
+      roadDistanceKm: metrics.combinedDistanceKm,
+    });
+  }
+  return rankCandidates(request, measured);
+}

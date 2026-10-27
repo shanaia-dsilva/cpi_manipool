@@ -1,11 +1,22 @@
-import React, { useState } from 'react';
+import {
+  liveRoutingActive,
+  routingVersion,
+  subscribeRouting,
+} from '../services/liveRouting';
+import React, { useState, useSyncExternalStore } from 'react';
 import { Alert, Switch, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import {
   NativeStackNavigationProp,
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
-import { Bookmark, Gauge, History, Settings2, ShieldCheck } from 'lucide-react-native';
+import {
+  Bookmark,
+  Gauge,
+  History,
+  Settings2,
+  ShieldCheck,
+} from 'lucide-react-native';
 import { RootParams } from '../navigation/types';
 import {
   Avatar,
@@ -109,6 +120,7 @@ export function RidesScreen() {
   );
 }
 export function ProfileScreen() {
+  useSyncExternalStore(subscribeRouting, routingVersion);
   const { state } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootParams>>();
   return (
@@ -146,9 +158,9 @@ export function ProfileScreen() {
         icon={Gauge}
         label="Routing & API Limits"
         detail={
-          state.apiQuota.googleMapsDemoMode
+          liveRoutingActive()
             ? '🔵 Google Maps Demo Active · Tap to view limits'
-            : '🛡️ Safe Mode (OSRM Active) · View API Quotas'
+            : 'Google OFF · Local demo estimates · View limits'
         }
         onPress={() => navigation.navigate('ApiQuota')}
       />

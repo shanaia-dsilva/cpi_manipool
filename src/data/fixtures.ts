@@ -42,7 +42,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.1147, longitude: 77.5878 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Main administrative driveway, 24/7 security booth',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'gate',
@@ -53,7 +53,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.1152, longitude: 77.5885 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Dedicated vehicle turnaround bay, illuminated & guard monitored',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'gate2',
@@ -64,7 +64,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.1135, longitude: 77.5865 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Adjacent to local auto stand, lower traffic congestion',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'yelahanka',
@@ -75,7 +75,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.1007, longitude: 77.5963 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'NES Office circle, broad curbside for safe boarding',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'kogilu',
@@ -86,7 +86,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.1072, longitude: 77.5982 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'BMTC bus shelter, safe meeting point before Bellary Road',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'airport',
@@ -97,7 +97,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.1986, longitude: 77.7066 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'T1 Arrivals Carpool Bay / Lane 3',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'metro',
@@ -108,7 +108,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.0232, longitude: 77.5501 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Metro Gate A drop-off zone, escalator access',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'railway',
@@ -119,7 +119,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.0245, longitude: 77.5515 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Platform 1 Main Portico entrance',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'majestic',
@@ -130,7 +130,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 12.9774, longitude: 77.5727 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'BMTC Terminal 1 Entrance, wide pedestrian plaza',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'church',
@@ -141,7 +141,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 12.9753, longitude: 77.6067 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Cobblestone walkway entry near Brigade Road',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'hebbal',
@@ -152,7 +152,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.0358, longitude: 77.597 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Esteem Mall service road, major northern transit hub',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
   {
     id: 'manyata',
@@ -163,7 +163,7 @@ export const locations: Location[] = [
     coordinate: { latitude: 13.0487, longitude: 77.62 },
     source: 'preset',
     isPickupSuitable: true,
-    accessNote: 'Gate 1 Visitor Entrance cab bay',
+    accessNote: 'Candidate landmark; confirm the entrance and legal pickup access on site',
   },
 ];
 
@@ -206,7 +206,7 @@ export const initialQuotaUsage = {
   osrmRouteRequests: 0,
   offlineFallbackRequests: 0,
   lastCallTimestamp: undefined,
-  lastCallProvider: 'OSRM / OpenStreetMap (Default Safe Mode)',
+  lastCallProvider: 'Local demo estimates (Google OFF)',
 };
 
 export function getLocation(

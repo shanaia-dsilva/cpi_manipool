@@ -1,8 +1,21 @@
-import { Coordinate, Location, PickupArrangement, PickupStop, Student } from '../types/domain';
-import { haversineDistance } from './routing';
+import {
+  Coordinate,
+  Location,
+  PickupArrangement,
+  PickupStop,
+  Student,
+} from '../types/domain';
+import {
+  calculateRoute,
+  computeOfflineRoute,
+  haversineDistance,
+} from './routing';
 
-// Curated list of verified safe, accessible pickup/meeting points in North Bengaluru
-export const VERIFIED_MEETING_POINTS: (Location & { safetyScore: number; cabAccessRating: string })[] = [
+// Candidate landmarks; access and stopping legality require on-site confirmation.
+export const VERIFIED_MEETING_POINTS: (Location & {
+  safetyScore: number;
+  cabAccessRating: string;
+})[] = [
   {
     id: 'gate',
     name: 'Campus Main Gate · Security Bay',
@@ -11,8 +24,9 @@ export const VERIFIED_MEETING_POINTS: (Location & { safetyScore: number; cabAcce
     corridor: 'campus',
     coordinate: { latitude: 13.1152, longitude: 77.5885 },
     isPickupSuitable: true,
-    safetyScore: 10,
-    cabAccessRating: 'Wide turnaround loop, security guards present 24/7, bright lighting',
+    safetyScore: 0,
+    cabAccessRating:
+      'Access not field-verified; confirm legal stopping and pedestrian access',
   },
   {
     id: 'gate2',
@@ -22,8 +36,9 @@ export const VERIFIED_MEETING_POINTS: (Location & { safetyScore: number; cabAcce
     corridor: 'campus',
     coordinate: { latitude: 13.1135, longitude: 77.5865 },
     isPickupSuitable: true,
-    safetyScore: 8,
-    cabAccessRating: 'Designated auto stand, lower main road traffic',
+    safetyScore: 0,
+    cabAccessRating:
+      'Access not field-verified; confirm legal stopping and pedestrian access',
   },
   {
     id: 'kogilu',
@@ -33,8 +48,9 @@ export const VERIFIED_MEETING_POINTS: (Location & { safetyScore: number; cabAcce
     corridor: 'north',
     coordinate: { latitude: 13.1072, longitude: 77.5982 },
     isPickupSuitable: true,
-    safetyScore: 9,
-    cabAccessRating: 'Direct highway slip-road, sheltered BMTC stop, pedestrian zebra crossing',
+    safetyScore: 0,
+    cabAccessRating:
+      'Access not field-verified; confirm legal stopping and pedestrian access',
   },
   {
     id: 'yelahanka',
@@ -44,8 +60,9 @@ export const VERIFIED_MEETING_POINTS: (Location & { safetyScore: number; cabAcce
     corridor: 'north',
     coordinate: { latitude: 13.1042, longitude: 77.5925 },
     isPickupSuitable: true,
-    safetyScore: 9,
-    cabAccessRating: 'Adjacent to traffic police station, broad curbside for safe boarding',
+    safetyScore: 0,
+    cabAccessRating:
+      'Access not field-verified; confirm legal stopping and pedestrian access',
   },
   {
     id: 'hebbal',
@@ -55,200 +72,252 @@ export const VERIFIED_MEETING_POINTS: (Location & { safetyScore: number; cabAcce
     corridor: 'north',
     coordinate: { latitude: 13.0358, longitude: 77.597 },
     isPickupSuitable: true,
-    safetyScore: 8,
-    cabAccessRating: 'Dedicated highway service bay, easy merger into elevated expressway',
+    safetyScore: 0,
+    cabAccessRating:
+      'Access not field-verified; confirm legal stopping and pedestrian access',
   },
 ];
 
-// Helper to resolve student coordinate
-function getMemberCoordinate(member: Student, defaultCoord: Coordinate): Coordinate {
-  return member.coordinate ?? defaultCoord;
+export function findBestMeetingPoint(members: Student[], origin: Coordinate) {
+  if (!members.length) throw new Error('At least one rider is required.');
+  const ranked = VERIFIED_MEETING_POINTS.map(meetingPoint => {
+    const distances = members.map(
+      m =>
+        haversineDistance(m.coordinate ?? origin, meetingPoint.coordinate!) *
+        1000,
+    );
+    return {
+      meetingPoint,
+      averageWalkMeters: Math.round(
+        distances.reduce((a, b) => a + b, 0) / members.length,
+      ),
+      maxWalkMeters: Math.round(Math.max(...distances)),
+    };
+  }).sort(
+    (a, b) =>
+      a.maxWalkMeters - b.maxWalkMeters ||
+      a.averageWalkMeters - b.averageWalkMeters,
+  );
+  return ranked[0];
 }
-
-// Selects the practical common meeting point minimizing total walking distance
-export function findBestMeetingPoint(
-  members: Student[],
-  defaultCoord: Coordinate,
-): { meetingPoint: Location; averageWalkMeters: number; maxWalkMeters: number } {
-  const coords = members.map(m => getMemberCoordinate(m, defaultCoord));
-
-  let bestPoint = VERIFIED_MEETING_POINTS[0];
-  let minTotalDist = Infinity;
-  let bestAvg = 0;
-  let bestMax = 0;
-
-  for (const candidate of VERIFIED_MEETING_POINTS) {
-    if (!candidate.coordinate) continue;
-    let totalDist = 0;
-    let maxDist = 0;
-
-    for (const coord of coords) {
-      const dist = haversineDistance(candidate.coordinate, coord) * 1000; // in meters
-      totalDist += dist;
-      if (dist > maxDist) maxDist = dist;
-    }
-
-    if (totalDist < minTotalDist) {
-      minTotalDist = totalDist;
-      bestPoint = candidate;
-      bestAvg = Math.round(totalDist / coords.length);
-      bestMax = Math.round(maxDist);
-    }
-  }
-
-  return {
-    meetingPoint: bestPoint,
-    averageWalkMeters: bestAvg,
-    maxWalkMeters: bestMax,
-  };
-}
-
-// Order sequential stops along the road progression vector toward destination
-// Heuristic: Project member coordinates onto the vector from origin to destination
 export function orderSequentialPickups(
   origin: Coordinate,
   destination: Coordinate,
   members: Student[],
 ): Student[] {
-  const vX = destination.longitude - origin.longitude;
-  const vY = destination.latitude - origin.latitude;
-  const vLenSq = vX * vX + vY * vY;
-
-  return members.slice().sort((a, b) => {
-    const aCoord = getMemberCoordinate(a, origin);
-    const bCoord = getMemberCoordinate(b, origin);
-
-    // Vector projection scalar t = ((P - origin) • V) / |V|^2
-    const tA = ((aCoord.longitude - origin.longitude) * vX + (aCoord.latitude - origin.latitude) * vY) / (vLenSq || 1);
-    const tB = ((bCoord.longitude - origin.longitude) * vX + (bCoord.latitude - origin.latitude) * vY) / (vLenSq || 1);
-
-    return tA - tB;
-  });
+  // Small demo groups: evaluate all permutations with the local estimate model.
+  return (
+    permutations(members.slice(1))
+      .map(rest => [members[0], ...rest])
+      .sort((a, b) => {
+        const cost = (items: Student[]) =>
+          computeOfflineRoute([
+            origin,
+            ...items.slice(1).map(m => m.coordinate ?? origin),
+            destination,
+          ]).durationMinutes;
+        return cost(a) - cost(b);
+      })[0] ?? []
+  );
 }
-
-// Evaluates both pickup arrangements side-by-side
-export function comparePickupArrangements(
-  originLocation: Location,
-  destinationLocation: Location,
-  members: Student[],
-): {
+function permutations<T>(items: T[]): T[][] {
+  if (items.length > 4) throw new Error('At most four riders are supported.');
+  return items.length
+    ? items.flatMap((item, i) =>
+        permutations(items.filter((_, j) => j !== i)).map(rest => [
+          item,
+          ...rest,
+        ]),
+      )
+    : [[]];
+}
+export interface PickupComparison {
   common: PickupArrangement;
   sequential: PickupArrangement;
   recommendedMode: 'common' | 'sequential';
   recommendationSummary: string;
-} {
-  const originCoord = originLocation.coordinate ?? { latitude: 13.1152, longitude: 77.5885 };
-  const destCoord = destinationLocation.coordinate ?? { latitude: 13.1986, longitude: 77.7066 };
-
-  // 1. Evaluate Common Meeting Point
-  const { meetingPoint, averageWalkMeters } = findBestMeetingPoint(members, originCoord);
-  const commonStops: PickupStop[] = members.map((member, _index) => {
-    const memberCoord = getMemberCoordinate(member, originCoord);
-    const walkMeters = Math.round(
-      meetingPoint.coordinate ? haversineDistance(meetingPoint.coordinate, memberCoord) * 1000 : 150,
-    );
-    const walkMinutes = Math.max(1, Math.round(walkMeters / 75)); // 75m/min walking speed
-
-    return {
-      studentId: member.id,
-      studentName: member.name,
-      locationName: meetingPoint.name,
-      coordinate: meetingPoint.coordinate ?? originCoord,
-      order: 1, // Single coordinated departure
-      walkingDistanceMeters: walkMeters,
-      walkingMinutes: walkMinutes,
-      curbsideNote: 'Assemble at security gate 5 mins prior to departure',
-    };
-  });
-
-  const commonArrangement: PickupArrangement = {
-    mode: 'common',
-    title: 'Common Meeting Point',
-    meetingPointName: meetingPoint.name,
-    meetingPointCoordinate: meetingPoint.coordinate,
-    totalDetourMinutes: 2, // Minimal vehicle deviation
-    totalDetourKm: 0.4,
-    averageWalkingDistanceMeters: averageWalkMeters,
-    stops: commonStops,
-    feasibilityScore: 9,
-    safetyRating: 'High · Guarded & well-lit campus checkpoint',
+}
+function buildComparison(
+  origin: Location,
+  destination: Location,
+  members: Student[],
+  ordered: Student[],
+  direct: import('../types/domain').RouteGeometry,
+  commonRoute: import('../types/domain').RouteGeometry,
+  sequentialRoute: import('../types/domain').RouteGeometry,
+  walkMeters: number[],
+  live: boolean,
+): PickupComparison {
+  const { meetingPoint } = findBestMeetingPoint(members, origin.coordinate!);
+  const avg = Math.round(
+    walkMeters.reduce((a, b) => a + b, 0) / members.length,
+  );
+  const max = Math.max(...walkMeters);
+  const stops = (mode: 'common' | 'sequential'): PickupStop[] =>
+    (mode === 'common' ? members : ordered).map((m, i) => ({
+      studentId: m.id,
+      studentName: m.name,
+      locationName:
+        mode === 'common' ? meetingPoint.name : `${m.name} · ${m.area}`,
+      coordinate: mode === 'common' ? meetingPoint.coordinate! : m.coordinate!,
+      order: mode === 'common' ? 1 : i + 1,
+      walkingDistanceMeters: mode === 'common' ? Math.round(walkMeters[i]) : 0,
+      walkingMinutes: mode === 'common' ? Math.ceil(walkMeters[i] / 75) : 0,
+      curbsideNote:
+        'Confirm legal stopping, pavement access, luggage and mobility needs with all riders.',
+    }));
+  const make = (
+    mode: 'common' | 'sequential',
+    route: import('../types/domain').RouteGeometry,
+  ): PickupArrangement => ({
+    mode,
+    title: mode === 'common' ? 'Common meeting point' : 'Sequential pickups',
+    ...(mode === 'common'
+      ? {
+          meetingPointName: meetingPoint.name,
+          meetingPointCoordinate: meetingPoint.coordinate,
+        }
+      : {}),
+    totalDetourMinutes:
+      Math.max(0, route.durationMinutes - direct.durationMinutes) +
+      (mode === 'common' ? 3 : members.length * 3),
+    totalDetourKm: Math.max(0, route.distanceKm - direct.distanceKm),
+    averageWalkingDistanceMeters: mode === 'common' ? avg : 0,
+    stops: stops(mode),
+    feasibilityScore: mode === 'common' && max > 500 ? 0 : 5,
+    safetyRating: 'Access unverified · riders must confirm safe, legal pickup',
     pros: [
-      'Single vehicle pickup eliminates 6–10 minutes of city traffic detour',
-      'Guarded campus security post with 24/7 CCTV & lighting',
-      'No delays waiting outside individual gates or narrow lanes',
+      mode === 'common'
+        ? 'One shared boarding stop'
+        : 'Avoids walking to a common point',
     ],
     cons: [
-      `Riders walk an average of ~${averageWalkMeters} m (${Math.round(averageWalkMeters / 75)} mins) to the meeting point`,
+      mode === 'common'
+        ? `Longest walk: ${Math.round(max)} m; 500 m maximum preferred`
+        : 'Three minutes boarding allowance per rider',
     ],
-    recommendationReason:
-      averageWalkMeters <= 350
-        ? `Saves ~7 min vehicle detour with only ~${averageWalkMeters} m walk per rider.`
-        : 'Saves vehicle time but requires walking to the main gate.',
-  };
-
-  // 2. Evaluate Sequential Pickups
-  const orderedMembers = orderSequentialPickups(originCoord, destCoord, members);
-  let cumulativeDetourMinutes = 0;
-  let cumulativeDetourKm = 0;
-
-  const sequentialStops: PickupStop[] = orderedMembers.map((member, index) => {
-    const memberCoord = getMemberCoordinate(member, originCoord);
-    // Extra detour per pickup stop in Bengaluru (stop & go, boarding)
-    const legDetourKm = index === 0 ? 0 : 1.2;
-    const legDetourMins = index === 0 ? 0 : 3.5;
-
-    cumulativeDetourKm += legDetourKm;
-    cumulativeDetourMinutes += legDetourMins;
-
-    return {
-      studentId: member.id,
-      studentName: member.name,
-      locationName: `${member.name}'s pickup · ${member.area}`,
-      coordinate: memberCoord,
-      order: index + 1,
-      walkingDistanceMeters: 0,
-      walkingMinutes: 0,
-      curbsideNote: `Stop #${index + 1} en route · Curbside pickup`,
-    };
+    recommendationReason: live
+      ? 'Google road distances; boarding and walking time are estimates.'
+      : 'Demo estimates only; not road measurements.',
+    route,
+    evidence: live ? 'google' : 'demo',
+    feasible: mode !== 'common' || max <= 500,
   });
-
-  const sequentialArrangement: PickupArrangement = {
-    mode: 'sequential',
-    title: 'Sequential Pickups (Ordered Route)',
-    totalDetourMinutes: Math.round(cumulativeDetourMinutes),
-    totalDetourKm: Number(cumulativeDetourKm.toFixed(1)),
-    averageWalkingDistanceMeters: 0,
-    stops: sequentialStops,
-    feasibilityScore: 7,
-    safetyRating: 'Medium · Curbside pickup along residential roads',
-    pros: [
-      'Zero walking required for riders (direct doorstep/curbside pickup)',
-      'Convenient for students travelling with heavy luggage or during rain',
-    ],
-    cons: [
-      `Adds ~${Math.round(cumulativeDetourMinutes)} minutes detour to total journey time`,
-      'Subject to localized street parking constraints and traffic bottlenecks',
-    ],
-    recommendationReason:
-      'Convenient if carrying baggage, but increases total trip time by ~' +
-      Math.round(cumulativeDetourMinutes) +
-      ' mins.',
-  };
-
-  // Determine recommendation
-  const recommendedMode: 'common' | 'sequential' =
-    averageWalkMeters <= 350 ? 'common' : 'sequential';
-  const recommendationSummary =
-    recommendedMode === 'common'
-      ? `We recommend the Common Meeting Point (${meetingPoint.name}). It saves ~${Math.round(
-          cumulativeDetourMinutes - 2,
-        )} min vehicle detour with an easy ${Math.round(averageWalkMeters / 75)} min walk.`
-      : `Sequential pickups recommended due to distance between rider starting locations.`;
-
+  const common = make('common', commonRoute);
+  const sequential = make('sequential', sequentialRoute);
+  const recommendedMode =
+    max <= 500 && common.totalDetourMinutes <= sequential.totalDetourMinutes
+      ? 'common'
+      : 'sequential';
   return {
-    common: commonArrangement,
-    sequential: sequentialArrangement,
+    common,
+    sequential,
     recommendedMode,
-    recommendationSummary,
+    recommendationSummary: `${
+      live ? 'Google Maps road comparison' : 'Demo estimate comparison'
+    }: ${
+      recommendedMode === 'common' ? 'meet together' : 'use sequential pickups'
+    }. Longest walk ${Math.round(
+      max,
+    )} m. Access must be confirmed; no safety certification.`,
   };
+}
+export function comparePickupArrangements(
+  origin: Location,
+  destination: Location,
+  members: Student[],
+): PickupComparison {
+  const normalized = members.map(m => ({
+    ...m,
+    coordinate: m.coordinate ?? origin.coordinate!,
+  }));
+  const { meetingPoint } = findBestMeetingPoint(normalized, origin.coordinate!);
+  const ordered = orderSequentialPickups(
+    origin.coordinate!,
+    destination.coordinate!,
+    normalized,
+  );
+  return buildComparison(
+    origin,
+    destination,
+    normalized,
+    ordered,
+    computeOfflineRoute([origin.coordinate!, destination.coordinate!]),
+    computeOfflineRoute([meetingPoint.coordinate!, destination.coordinate!]),
+    computeOfflineRoute([
+      origin.coordinate!,
+      ...ordered.slice(1).map(m => m.coordinate!),
+      destination.coordinate!,
+    ]),
+    normalized.map(
+      m => haversineDistance(m.coordinate!, meetingPoint.coordinate!) * 1000,
+    ),
+    false,
+  );
+}
+export async function compareLivePickupArrangements(
+  origin: Location,
+  destination: Location,
+  members: Student[],
+): Promise<PickupComparison> {
+  if (
+    !origin.coordinate ||
+    !destination.coordinate ||
+    members.some(m => !m.coordinate)
+  )
+    throw new Error('All riders need pickup coordinates.');
+  // Anchor requester at origin. With up to three riders, test at most two orders.
+  if (members.length < 1 || members.length > 3)
+    throw new Error('Faculty demo supports up to three riders.');
+  const { meetingPoint } = findBestMeetingPoint(members, origin.coordinate);
+  const route = async (
+    points: Coordinate[],
+    mode: 'DRIVE' | 'WALK' = 'DRIVE',
+  ) => {
+    const result = await calculateRoute(points, { useGoogleDemo: true, mode });
+    if (result.status !== 'success')
+      throw new Error(
+        result.error ||
+          'No road route. Change the pickup or switch to demo mode.',
+      );
+    return result;
+  };
+  const direct = await route([origin.coordinate, destination.coordinate]);
+  const common = await route([
+    meetingPoint.coordinate!,
+    destination.coordinate,
+  ]);
+  const walks: number[] = [];
+  for (const member of members) {
+    walks.push(
+      haversineDistance(member.coordinate!, meetingPoint.coordinate!) < 0.01
+        ? 0
+        : (await route([member.coordinate!, meetingPoint.coordinate!], 'WALK'))
+            .distanceKm * 1000,
+    );
+  }
+  const alternatives = permutations(members.slice(1));
+  let best:
+    | { ordered: Student[]; route: import('../types/domain').RouteGeometry }
+    | undefined;
+  for (const order of alternatives) {
+    const result = await route([
+      origin.coordinate,
+      ...order.map(m => m.coordinate!),
+      destination.coordinate,
+    ]);
+    if (!best || result.durationMinutes < best.route.durationMinutes)
+      best = { ordered: [members[0], ...order], route: result };
+  }
+  return buildComparison(
+    origin,
+    destination,
+    members,
+    best!.ordered,
+    direct,
+    common,
+    best!.route,
+    walks,
+    true,
+  );
 }

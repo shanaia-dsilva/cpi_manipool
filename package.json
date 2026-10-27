@@ -9,7 +9,9 @@
     "start": "react-native start",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "bundle:android": "node scripts/bundle-android.cjs"
+    "bundle:android": "node scripts/bundle-android.cjs",
+    "demo:server": "node --env-file=.env server/routing-server.cjs",
+    "test:gateway": "node --test server/routing-server.test.cjs"
   },
   "dependencies": {
     "@react-native-community/datetimepicker": "^9.2.1",

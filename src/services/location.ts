@@ -1,4 +1,4 @@
-import { PermissionsAndroid, Platform } from 'react-native';
+import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { Coordinate, Location } from '../types/domain';
 import { locations } from '../data/fixtures';
 import { haversineDistance } from './routing';
@@ -32,24 +32,19 @@ export async function checkLocationPermission(): Promise<boolean> {
 // Request Android location permission with user-facing rationale
 export async function requestLocationPermission(): Promise<LocationPermissionResult> {
   if (Platform.OS !== 'android') {
-    return 'granted';
+    return 'unavailable';
   }
   try {
-    const granted = await PermissionsAndroid.request(
+    const granted = await PermissionsAndroid.requestMultiple([
       PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      {
-        title: 'MAHE Carpool Location Access',
-        message:
-          'Allow MAHE Carpool to detect your location to set your pickup point near campus or transit stops.',
-        buttonNeutral: 'Ask Me Later',
-        buttonNegative: 'Cancel',
-        buttonPositive: 'Allow',
-      },
-    );
-
-    if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+      PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+    ]);
+    if (
+      Object.values(granted).some(
+        value => value === PermissionsAndroid.RESULTS.GRANTED,
+      )
+    )
       return 'granted';
-    }
     return 'denied';
   } catch {
     return 'unavailable';
@@ -93,22 +88,38 @@ export async function getDeviceLocationWithFallback(
     };
   }
 
-  // When permission is granted, resolve coordinate
-  // On device/emulator without GPS fix or when simulation provided
-  const targetCoord: Coordinate =
-    simulatedCoord ?? { latitude: 13.1152, longitude: 77.5885 }; // Default to MAHE Main Gate coordinates
+  let targetCoord: Coordinate;
+  try {
+    targetCoord =
+      simulatedCoord ??
+      (await NativeModules.DeviceLocation.getCurrentPosition());
+    if (
+      !Number.isFinite(targetCoord.latitude) ||
+      !Number.isFinite(targetCoord.longitude)
+    )
+      throw new Error('Invalid location');
+  } catch {
+    return {
+      status: 'unavailable',
+      resolvedLocation: CAMPUS_GATE_FALLBACK,
+      message:
+        'No device location fix available. Campus main gate is a fallback, not your detected location. Choose a landmark or retry with location services enabled.',
+    };
+  }
 
-  const nearest = findNearestLandmark(targetCoord, 1.5);
+  const nearest = findNearestLandmark(targetCoord, 0.1);
   const location: Location = nearest ?? {
-    id: `gps:${targetCoord.latitude.toFixed(4)},${targetCoord.longitude.toFixed(4)}`,
+    id: `gps:${targetCoord.latitude.toFixed(4)},${targetCoord.longitude.toFixed(
+      4,
+    )}`,
     name: 'Current Device Location',
-    area: 'Near MAHE Bengaluru Campus',
-    kind: 'campus',
-    corridor: 'campus',
+    area: 'Device coordinates · confirm pickup access',
+    kind: 'city',
+    corridor: 'custom',
     coordinate: targetCoord,
     source: 'gps',
-    isPickupSuitable: true,
-    accessNote: 'Current device GPS position',
+    isPickupSuitable: false,
+    accessNote: 'Device position; confirm legal vehicle access before pickup',
   };
 
   return {

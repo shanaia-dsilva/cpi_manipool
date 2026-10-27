@@ -46,3 +46,32 @@ Non-breaking npm audit fixes were attempted. The final local install reports 53 
 - Confirm no live services/permissions/charges and no secrets in native outputs.
 
 The implementation is a local-session prototype; production authentication, backend persistence, routing, realtime messaging, payments, provider integration and push delivery are deliberately outside scope.
+
+## Routing completion update — 27 October 2026
+
+This update supersedes earlier claims that the offline estimates were road topology, that Google mode used live traffic, or that local counters represented Google billing allowance.
+
+Checks run using a temporary copy at `/private/tmp/manipool-check`, because the original parent folder contains a literal backslash that breaks Node module resolution and TypeScript library paths. Node 24 was installed only in a temporary testing directory. The original project was not moved.
+
+- TypeScript: passed.
+- ESLint with zero warnings: passed.
+- Jest: 41 tests passed, including six new live-routing tests (mocked responses, no paid calls).
+- Gateway: four integration tests passed, exercising default OFF, authentication, missing configuration, invalid stops, concurrent rate reservation, session/day/lifetime caps, expiry, durable writes and upstream failure accounting.
+- Android Metro JavaScript bundle: passed. This is not a native APK build.
+- Native Android GPS and permissions: implemented but not device-verified. No Android SDK installation was available here.
+- Real Google/Bengaluru road journeys: not executed; no Google key was supplied or discovered. Run the checklist below with the private demo setup before presenting.
+
+Faculty preflight:
+
+1. Launch with Google OFF; preview and match without the gateway. Confirm explicit demo labels.
+2. Connect gateway, enable Google and check the real campus→airport test response and incremented attempt count.
+3. Preview campus→Yeshwanthpur Metro and campus→Majestic. Open Google Maps and verify entrances/route plausibility. Do not treat synthetic test polylines as road evidence.
+4. Check candidate pickup coordinates, legal stopping and pedestrian access with local knowledge. Test a group whose longest walk exceeds 500 m; common pickup should be disabled.
+5. Run real pickup comparison, choose an arrangement, and confirm ordered stops remain consistent after simulated booking.
+6. Deny location permission; turn device location off; test a successful fresh GPS fix. Fallback messaging must never say the campus coordinate was detected.
+7. Stop the gateway or exhaust a limit. Confirm understandable failure, retry and Google-OFF recovery; no fabricated successful Google response.
+8. Let the live session expire; verify the switch returns OFF. Restart the app/server and verify durable counters remain. Never reset/delete the ledger to demonstrate recovery.
+
+### Billing-safety follow-up
+
+42 mocked app tests pass, including a new test proving that a live route screen sends zero requests when mounted, zero when its confirmation is cancelled, and one only after approval. TypeScript and zero-warning lint pass. No real Google Maps API requests were made; the key supplied in chat was not saved or used. The dashboard now shows remaining requests and usage bars, with explicit unknown/billing-not-connected states.

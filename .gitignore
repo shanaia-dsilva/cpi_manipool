@@ -169,3 +169,9 @@ vendor/bundle/
 *.hprof
 *.jsbundle
 /build/
+
+# Private faculty demo configuration and durable usage ledger
+server/.data/
+.env
+.env.*
+!.env.example
