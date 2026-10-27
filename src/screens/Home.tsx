@@ -1,15 +1,18 @@
 import React, { useState } from 'react';
-import { Alert, TextInput, View } from 'react-native';
+import { Alert, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
 import {
   CalendarDays,
   Clock3,
+  Gauge,
   MapPin,
   Navigation,
   Plane,
+  Shield,
   TrainFront,
+  Zap,
 } from 'lucide-react-native';
 import { RootParams } from '../navigation/types';
 import {
@@ -26,12 +29,16 @@ import {
   Title,
   ui,
 } from '../components/ui';
-import { RouteLogo, RouteMap } from '../components/RouteMap';
+import { RouteLogo } from '../components/RouteMap';
+import { InteractiveRouteMap } from '../components/InteractiveRouteMap';
 import { RideSummary } from '../components/RideSummary';
 import { getLocation, locations } from '../data/fixtures';
 import { newId, nowISO, useApp } from '../state/AppContext';
 import { departureFromDraft, isOpen, validateDraft } from '../services/journey';
 import { openRide } from '../navigation/actions';
+import { getDeviceLocationWithFallback } from '../services/location';
+import { isDemoModeActive } from '../services/apiQuota';
+import { colors as c } from '../theme';
 
 export function JourneyForm() {
   const { state, dispatch } = useApp();
@@ -39,6 +46,8 @@ export function JourneyForm() {
   const [error, setError] = useState<string>();
   const draft = state.draft;
   const current = state.rides.find(ride => isOpen(ride.status));
+  const demoActive = isDemoModeActive(state.apiQuota);
+
   const chooseDate = (mode: 'date' | 'time') =>
     DateTimePickerAndroid.open({
       value: departureFromDraft(draft) ?? new Date(),
@@ -70,6 +79,7 @@ export function JourneyForm() {
         });
       },
     });
+
   const find = () => {
     if (current) {
       Alert.alert(
@@ -85,7 +95,7 @@ export function JourneyForm() {
       );
       return;
     }
-    const validation = validateDraft(draft);
+    const validation = validateDraft(draft, Date.now(), state.customPlaces);
     setError(validation);
     if (validation) {
       return;
@@ -94,20 +104,43 @@ export function JourneyForm() {
     dispatch({ type: 'SEARCH', id, now: nowISO() });
     navigation.navigate('Matching', { rideId: id });
   };
+
+  const pickupLoc = getLocation(draft.pickupId, state.customPlaces);
+  const destLoc = getLocation(draft.destinationId, state.customPlaces);
+
   return (
     <Card>
+      {/* Routing mode status pill */}
+      <TouchableOpacity
+        onPress={() => navigation.navigate('ApiQuota')}
+        accessibilityLabel="Routing and API limits"
+        style={styles.apiModePill}
+      >
+        <Row>
+          {demoActive ? (
+            <Zap size={14} color={c.accent} />
+          ) : (
+            <Shield size={14} color="#2E7D32" />
+          )}
+          <Copy small style={demoActive ? styles.apiModeActive : styles.apiModeSafe}>
+            {demoActive ? 'Google Maps Demo Active' : 'Safe Routing Mode (OSRM)'}
+          </Copy>
+          <Gauge size={14} color={c.accent} style={styles.apiGaugeIcon} />
+        </Row>
+      </TouchableOpacity>
+
       <Choice
         icon={MapPin}
-        label={getLocation(draft.pickupId)?.name ?? 'Choose pickup'}
-        detail="Pickup · demo landmark"
+        label={pickupLoc?.name ?? 'Choose pickup'}
+        detail={pickupLoc?.area ?? 'Pickup · campus or landmark'}
         onPress={() =>
           navigation.navigate('LocationSearch', { field: 'pickupId' })
         }
       />
       <Choice
         icon={Navigation}
-        label={getLocation(draft.destinationId)?.name ?? 'Choose destination'}
-        detail="Where are you headed?"
+        label={destLoc?.name ?? 'Choose destination'}
+        detail={destLoc?.area ?? 'Where are you headed?'}
         onPress={() =>
           navigation.navigate('LocationSearch', { field: 'destinationId' })
         }
@@ -147,23 +180,33 @@ export function JourneyForm() {
       <Button label="Find a Carpool" onPress={find} />
       <Button
         secondary
-        label="Preview the route"
+        label="Preview road route"
         onPress={() => navigation.navigate('MapPreview')}
       />
     </Card>
   );
 }
+
 export function HomeScreen() {
   const { state, dispatch } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootParams>>();
   const upcoming = state.rides.find(ride =>
     ['GROUP_FORMED', 'RIDE_BOOKED', 'IN_PROGRESS'].includes(ride.status),
   );
+  const demoActive = isDemoModeActive(state.apiQuota);
+
   return (
     <Page>
       <View style={ui.spread}>
         <RouteLogo />
-        <Badge>Campus demo</Badge>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('ApiQuota')}
+          accessibilityLabel="Open API controls"
+        >
+          <Badge>
+            {demoActive ? 'GMaps Demo On' : 'Safe Mode (OSRM)'}
+          </Badge>
+        </TouchableOpacity>
       </View>
       <Kicker>Hello, {state.profile.name.split(' ')[0]}</Kicker>
       <Title>Where are{'\n'}you going?</Title>
@@ -175,7 +218,7 @@ export function HomeScreen() {
       <Row wrap>
         {locations
           .filter(location =>
-            ['airport', 'metro', 'railway'].includes(location.id),
+            ['airport', 'metro', 'railway', 'kogilu'].includes(location.id),
           )
           .map(location => (
             <Choice
@@ -206,12 +249,12 @@ export function HomeScreen() {
         </>
       )}
       <Copy small muted>
-        Sample people, locations and estimates. No live location or provider
-        connection.
+        Bengaluru road-network estimates. Quotas protected by Shanaia's Demo Guard.
       </Copy>
     </Page>
   );
 }
+
 export function CreateRideScreen() {
   return (
     <Page back>
@@ -224,6 +267,7 @@ export function CreateRideScreen() {
     </Page>
   );
 }
+
 export function LocationSearchScreen({
   route,
 }: import('@react-navigation/native-stack').NativeStackScreenProps<
@@ -233,16 +277,66 @@ export function LocationSearchScreen({
   const { state, dispatch } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootParams>>();
   const [query, setQuery] = useState('');
-  const options = locations.filter(
+  const [locating, setLocating] = useState(false);
+
+  const allAvailable = [...locations, ...state.customPlaces];
+  const options = allAvailable.filter(
     location =>
       (!route.params.savedOnly || state.savedPlaces.includes(location.id)) &&
       `${location.name} ${location.area}`
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
+
+  // Device location handler with permission checks & fallback behavior
+  const handleUseMyLocation = async () => {
+    setLocating(true);
+    try {
+      const result = await getDeviceLocationWithFallback();
+      if (result.status === 'granted' && result.coordinate) {
+        // If location is custom/gps, select place
+        if (result.resolvedLocation.source === 'gps') {
+          dispatch({
+            type: 'SELECT_PLACE',
+            field: route.params.field,
+            location: result.resolvedLocation,
+          });
+        } else {
+          dispatch({
+            type: 'DRAFT',
+            patch: { [route.params.field]: result.resolvedLocation.id },
+          });
+        }
+        Alert.alert('Location Detected', result.message, [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+      } else {
+        // Fallback behavior
+        dispatch({
+          type: 'DRAFT',
+          patch: { [route.params.field]: result.resolvedLocation.id },
+        });
+        Alert.alert(
+          'Location Fallback',
+          result.message + ' You can also pick any campus gate manually.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }],
+        );
+      }
+    } catch {
+      // Safe fallback to campus
+      dispatch({
+        type: 'DRAFT',
+        patch: { [route.params.field]: 'gate' },
+      });
+      navigation.goBack();
+    } finally {
+      setLocating(false);
+    }
+  };
+
   return (
     <Page back>
-      <Kicker>Demo landmarks</Kicker>
+      <Kicker>Bengaluru Locations</Kicker>
       <Title>
         {route.params.savedOnly
           ? 'Saved places'
@@ -251,33 +345,49 @@ export function LocationSearchScreen({
           : 'Choose a destination'}
       </Title>
       <Copy muted>
-        Search our local sample list. No GPS or geocoding permissions needed.
+        Select verified campus pickup bays, transit hubs, or use device GPS.
       </Copy>
       <TextInput
         accessibilityLabel="Search demo locations"
-        placeholder="Search campus, airport, metro…"
+        placeholder="Search campus, airport, metro, Yelahanka…"
         value={query}
         onChangeText={setQuery}
         style={{ ...uiInput }}
-        placeholderTextColor={inputColors.secondary}
+        placeholderTextColor={c.accent}
       />
+
+      {/* Device location button with permission & fallback handling */}
       <Button
         secondary
-        label="Use demo current location: campus"
+        label={
+          locating
+            ? 'Detecting device location…'
+            : 'Use my device location (with fallback)'
+        }
+        disabled={locating}
+        onPress={handleUseMyLocation}
+      />
+
+      <Button
+        secondary
+        label="Use campus main gate (safe pickup bay)"
         onPress={() => {
           dispatch({
             type: 'DRAFT',
-            patch: { [route.params.field]: 'campus' },
+            patch: { [route.params.field]: 'gate' },
           });
           navigation.goBack();
         }}
       />
+
       {options.map(location => (
         <Card key={location.id}>
           <Choice
             icon={MapPin}
             label={location.name}
-            detail={location.area}
+            detail={`${location.area}${
+              location.accessNote ? ` • ${location.accessNote}` : ''
+            }`}
             selected={state.draft[route.params.field] === location.id}
             onPress={() => {
               dispatch({
@@ -300,58 +410,69 @@ export function LocationSearchScreen({
       ))}
       {!options.length && (
         <Copy muted>
-          No demo places found. Try a broader search or save a place from the
-          full list.
+          No places found matching "{query}". Try "campus", "airport", "metro", or "yelahanka".
         </Copy>
       )}
-      <Button
-        secondary
-        label="View selected route"
-        onPress={() => navigation.navigate('MapPreview')}
-      />
     </Page>
   );
 }
-import { colors as inputColors } from '../theme';
+
 const uiInput = {
   minHeight: 54,
   borderWidth: 1,
-  borderColor: inputColors.border,
+  borderColor: c.border,
   borderRadius: 14,
   padding: 16,
-  backgroundColor: inputColors.surface,
-  color: inputColors.text,
+  backgroundColor: c.surface,
+  color: c.text,
   fontSize: 16,
 };
+
 export function MapPreviewScreen() {
   const { state } = useApp();
   const navigation = useNavigation<NativeStackNavigationProp<RootParams>>();
+  const pickup = getLocation(state.draft.pickupId, state.customPlaces) ?? locations[0];
+  const destination =
+    getLocation(state.draft.destinationId, state.customPlaces) ?? locations[3];
+
   return (
     <Page back>
-      <Kicker>Connected routes</Kicker>
-      <Title>Your journey,{'\n'}in perspective.</Title>
-      <RouteMap
-        start={getLocation(state.draft.pickupId)?.name}
-        end={getLocation(state.draft.destinationId)?.name}
-      />
+      <Kicker>Road-Network Routing</Kicker>
+      <Title>Your journey,{'\n'}on the road.</Title>
       <Copy muted>
-        This illustration shows the idea of converging pickups. It is not a
-        navigable map or a measured road route.
+        Calculated using actual Bengaluru arterial road distances and travel times.
       </Copy>
+
+      {/* Interactive Road Map */}
+      <InteractiveRouteMap pickup={pickup} destination={destination} />
+
+      <Row>
+        <View style={ui.flex}>
+          <Button
+            secondary
+            label="Change pickup"
+            onPress={() =>
+              navigation.navigate('LocationSearch', { field: 'pickupId' })
+            }
+          />
+        </View>
+        <View style={ui.flex}>
+          <Button
+            secondary
+            label="Change destination"
+            onPress={() =>
+              navigation.navigate('LocationSearch', { field: 'destinationId' })
+            }
+          />
+        </View>
+      </Row>
+
       <Button
         secondary
-        label="Change pickup"
-        onPress={() =>
-          navigation.navigate('LocationSearch', { field: 'pickupId' })
-        }
+        label="View API Limits & Controls"
+        onPress={() => navigation.navigate('ApiQuota')}
       />
-      <Button
-        secondary
-        label="Change destination"
-        onPress={() =>
-          navigation.navigate('LocationSearch', { field: 'destinationId' })
-        }
-      />
+
       <Button
         label="Return to journey form"
         onPress={() =>
@@ -364,3 +485,28 @@ export function MapPreviewScreen() {
     </Page>
   );
 }
+
+const styles = StyleSheet.create({
+  apiModePill: {
+    backgroundColor: '#F7F4EE',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: c.border,
+    marginBottom: 6,
+  },
+  apiModeSafe: {
+    color: '#2E7D32',
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  apiModeActive: {
+    color: '#E65100',
+    fontWeight: '600',
+    marginLeft: 6,
+  },
+  apiGaugeIcon: {
+    marginLeft: 'auto',
+  },
+});

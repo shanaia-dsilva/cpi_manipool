@@ -10,8 +10,14 @@ This public repository is a fresh implementation based on the supplied project r
 
 - Brief splash, welcome, demo email entry and profile setup.
 - Exactly three main tabs: Home, Rides, Profile.
-- Shared ride form with searchable sample locations, native Android date/time pickers, validation, and Exact/±15/±30/±45 minute flexibility.
-- Warm cream/burgundy theme, outline icons, route logo and animated schematic maps without API keys.
+- Shared ride form with searchable verified Bengaluru landmarks, real coordinates, native Android date/time pickers, validation, and Exact/±15/±30/±45 minute flexibility.
+- Device location with Android runtime permission handling and safe fallback to campus gate if permission is denied.
+- Road-based routing and distance engine: calculates actual road km, travel time, and polyline curves using OSRM + curated Bengaluru road network.
+- Pickup arrangement comparison: evaluates Common Meeting Point (e.g. Campus Main Gate Security Bay) vs Sequential Pickups with walking distances, detours, safety ratings, and trade-off recommendations.
+- Route compatibility integration for matching: supplies route overlap (0.65–0.98) and detour minutes computed from road routing to Nathan's multi-criteria scoring algorithm.
+- Interactive road map display (`InteractiveRouteMap`) across route preview, matched groups, formed rides, active journey, and completion screens.
+- Multi-tier routing failure resilience: seamless automatic fallback from online OSRM to offline Bengaluru topology, with user recovery options and retry controls.
+- **Dedicated Routing & API Quota Control Screen (`ApiQuotaScreen`):** strictly keeps Google Maps OFF by default to protect against exceeding limits during team development; enables Google Maps exclusively for faculty demonstrations with auto-safety expiration timer and live quota meters.
 - Deterministic matching, no-match/retry/recovery controls, review and explicit mutual acceptance simulation.
 - Group formation, common/sequential pickup selection, local chat, quick messages and departure coordination.
 - Cab/auto capacity checks, exact fare splits, simulated booking confirmation, active ride and completion.
@@ -99,18 +105,24 @@ GitHub Actions runs TypeScript, zero-warning lint, Jest and Metro checks. A sepa
 ## Implementation and future integration
 
 ```text
-App.tsx                    Auth/native stack and Home/Rides/Profile tabs
-src/navigation/types.ts    Strong route parameters
-src/theme/                 Central palette, typography, spacing, radii
-src/components/            Accessible controls, cards, avatars, route visuals
-src/data/fixtures.ts        Students, landmarks, vehicle fares, matching config
-src/services/matching.ts   MatchingService interface and deterministic adapter
-src/services/journey.ts    Validation, windows/lifecycle helpers, exact fare split
-src/state/reducer.ts       Single source of truth for all domain operations
-src/state/AppContext.tsx   React context/reducer shared across navigation
-src/screens/               Auth, home/location, journey and account screens
-__tests__/                 Pure domain and mocked-native interaction tests
-android/                   Actual native Android project and Gradle wrapper
+App.tsx                             Auth/native stack, Home/Rides/Profile tabs & API Quota route
+src/navigation/types.ts             Strong route parameters
+src/theme/                          Central palette, typography, spacing, radii
+src/components/                     InteractiveRouteMap, accessible controls, cards, avatars
+src/data/fixtures.ts                Coordinates, Bengaluru landmarks, pickup points, fares
+src/services/routing.ts             Road distances, OSRM/Google/Offline router, compatibility
+src/services/pickupOptimization.ts  Meeting point selection, sequential ordering, comparison
+src/services/location.ts            Android location permissions, GPS fallback to campus gate
+src/services/apiQuota.ts            Google Maps demo gate, call tracking, quota limits, costs
+src/services/matching.ts            Road-grounded matching adapter & rankCandidates
+src/services/journey.ts             Validation, windows/lifecycle helpers, exact fare split
+src/state/reducer.ts                Single source of truth for all domain operations
+src/state/AppContext.tsx            React context/reducer shared across navigation
+src/screens/ApiQuotaScreen.tsx      Shanaia's API quota dashboard & demo mode gatekeeper
+src/screens/                        Auth, home/location, journey and account screens
+__tests__/                          Domain, routing optimization & mocked-native interaction tests
+docs/ROUTING_AND_MAPPING_EVALUATION.md Detailed mapping & routing evaluation report
+android/                            Actual native Android project and Gradle wrapper
 ```
 
 Lifecycle: `DRAFT → SEARCHING → MATCH_FOUND → WAITING_FOR_ACCEPTANCE → GROUP_FORMED → RIDE_BOOKED → IN_PROGRESS → COMPLETED`, with guarded cancellation, expiry, no-match and rematching paths. Only submitted requests are stored in history; the editable draft lives separately.

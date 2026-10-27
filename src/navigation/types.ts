@@ -22,5 +22,6 @@ export type RootParams = {
   Completed: { rideId: string };
   RideDetails: { rideId: string };
   Settings: undefined;
+  ApiQuota: undefined;
   Help: { rideId?: string } | undefined;
 };

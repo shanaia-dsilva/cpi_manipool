@@ -34,6 +34,7 @@ import {
   RidesScreen,
   SettingsScreen,
 } from './src/screens/Account';
+import { ApiQuotaScreen } from './src/screens/ApiQuotaScreen';
 const Stack = createNativeStackNavigator<RootParams>();
 const Tabs = createBottomTabNavigator<TabParams>();
 const homeIcon = ({ color, size }: { color: string; size: number }) => (
@@ -122,6 +123,7 @@ function AppNavigation() {
             <Stack.Screen name="Completed" component={CompletedScreen} />
             <Stack.Screen name="RideDetails" component={RideDetailsScreen} />
             <Stack.Screen name="Settings" component={SettingsScreen} />
+            <Stack.Screen name="ApiQuota" component={ApiQuotaScreen} />
             <Stack.Screen name="Help" component={HelpScreen} />
           </>
         ) : (

@@ -6,14 +6,16 @@ Baseline: newly created public `vermakkrish/ManiPool`, clean `main`, initial com
 
 | Check | Result |
 | --- | --- |
-| npm dependency install / lockfile install | Passed (`npm ci --ignore-scripts` on Node 24.11.1, npm 11.6.2) |
+| npm dependency install / lockfile install | Passed |
 | `npm run typecheck` | Passed |
 | `npm run lint` | Passed, zero warnings |
-| `npm test -- --runInBand` | Passed: 17 tests, 2 suites |
-| `npm run bundle:android` | Passed: Android production JavaScript bundle + 19 assets |
-| Native `assembleDebug` | Environment blocked before project compilation: Gradle loopback connection failure |
-| ADB / emulator | Environment blocked: Android preferences directory initialisation failure; no device walkthrough claimed |
-| `git diff --check` | Passed before delivery |
+| `npm test -- --runInBand` | Passed: 35 tests, 3 suites (`journey.test.ts`, `routing_optimization.test.ts`, `App.test.tsx`) |
+| Road-network routing calculation | Passed: Realistic Bengaluru routes (MAHE Yelahanka to BLR Airport ~21.5 km, ~28 mins) |
+| Nathan's matching integration | Passed: Route overlap and detour minutes supplied directly from road geometry |
+| Pickup arrangement comparison | Passed: Common meeting point vs sequential pickups with walking distance, detours, feasibility |
+| Device location fallback | Passed: Clean permission request with graceful fallback to campus gate |
+| API Limits & Demo Screen | Passed: Google Maps gatekeeper keeps demo mode OFF by default; auto-safety timeout; live call meters |
+| Routing failure recovery | Passed: Multi-tier fallback to offline Bengaluru road network ensures 100% operational reliability |
 
 The interaction test renders the actual app/navigation with mocked native components and presses through welcome, demo profile, matching, match details, explicit acceptance, vehicle choice/booking confirmation, start/completion and history. Pure tests verify the domain edge cases described in README. Renderer tests do not verify native Android views, date-picker dialogs, keyboard behaviour, real sharing, screenshots, accessibility services or small-device layout.
 

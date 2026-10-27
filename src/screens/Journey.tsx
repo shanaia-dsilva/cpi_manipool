@@ -22,10 +22,12 @@ import {
   ui,
 } from '../components/ui';
 import { RouteMap } from '../components/RouteMap';
+import { InteractiveRouteMap } from '../components/InteractiveRouteMap';
 import { FareBreakdown, RideSummary } from '../components/RideSummary';
 import { newId, nowISO, useApp } from '../state/AppContext';
 import { quickMessages, vehicleOptions } from '../data/fixtures';
 import { dateLabel, isOpen, money, splitFare } from '../services/journey';
+import { comparePickupArrangements } from '../services/pickupOptimization';
 import { CarpoolGroup, RideRequest } from '../types/domain';
 import { colors as c } from '../theme';
 import { goMain, openRide } from '../navigation/actions';
@@ -169,7 +171,7 @@ export function ResultsScreen({ route, navigation }: Props<'Results'>) {
       <Copy muted>
         {ride.destination.name} · {dateLabel(ride.departure)}
       </Copy>
-      <RouteMap start={ride.pickup.area} end={ride.destination.name} />
+      <InteractiveRouteMap pickup={ride.pickup} destination={ride.destination} />
       {ride.matches.length ? (
         <Card>
           <Badge>Excellent Match · sample riders</Badge>
@@ -321,18 +323,43 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
       </Page>
     );
   }
+  const pickupAnalysis = comparePickupArrangements(
+    ride.pickup,
+    ride.destination,
+    group.members,
+  );
+  const activeArrangement =
+    group.pickupMode === 'common'
+      ? pickupAnalysis.common
+      : pickupAnalysis.sequential;
+  const sequentialWaypoints =
+    group.pickupMode === 'sequential'
+      ? pickupAnalysis.sequential.stops
+          .slice(1)
+          .map(stop => stop.coordinate)
+      : undefined;
+
   return (
     <Page back>
       <Kicker>Individual routes. Shared journey.</Kicker>
       <Title>Your carpool{'\n'}is together.</Title>
       <RideSummary ride={ride} group={group} />
-      <RouteMap start={pickupName(ride, group)} end={ride.destination.name} />
+      <InteractiveRouteMap
+        pickup={
+          group.pickupMode === 'common' && group.meetingPoint
+            ? group.meetingPoint
+            : ride.pickup
+        }
+        destination={ride.destination}
+        waypoints={sequentialWaypoints}
+        arrangement={activeArrangement}
+      />
       <Card>
         <Heading>{group.members.length} demo riders</Heading>
         <Riders members={group.members} detail="Joined" />
       </Card>
       <Card muted>
-        <Heading>Suggested pickup</Heading>
+        <Heading>Suggested pickup arrangement</Heading>
         <Copy>{pickupName(ride, group)}</Copy>
         <Copy small>
           Departure window:{' '}
@@ -348,13 +375,10 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
             ).toISOString(),
           )}
         </Copy>
-        <Copy small>
-          Compare two illustrative arrangements. Walking and detour values are
-          demo estimates.
-        </Copy>
+        <Notice>{pickupAnalysis.recommendationSummary}</Notice>
         <Choice
           label="Common meeting point"
-          detail="Approx. 200 m walk per rider · 3 min vehicle detour"
+          detail={`Approx. ${pickupAnalysis.common.averageWalkingDistanceMeters} m walk per rider · ${pickupAnalysis.common.totalDetourMinutes} min vehicle detour (${pickupAnalysis.common.meetingPointName ?? 'Campus Main Gate'})`}
           selected={group.pickupMode === 'common'}
           disabled={ride.status !== 'GROUP_FORMED'}
           onPress={() =>
@@ -367,10 +391,12 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
           }
         />
         <Choice
-          label="Sequential pickups"
+          label="Sequential pickups (Ordered route)"
           detail={`${group.members
             .map(member => member.name)
-            .join(' → ')} · approx. 7 min detour`}
+            .join(' → ')} · approx. ${
+            pickupAnalysis.sequential.totalDetourMinutes
+          } min detour (${pickupAnalysis.sequential.totalDetourKm} km)`}
           selected={group.pickupMode === 'sequential'}
           disabled={ride.status !== 'GROUP_FORMED'}
           onPress={() =>
@@ -382,6 +408,12 @@ export function GroupRideScreen({ route, navigation }: Props<'GroupRide'>) {
             })
           }
         />
+        <Copy small muted>
+          Feasibility rating:{' '}
+          {group.pickupMode === 'common'
+            ? `${pickupAnalysis.common.feasibilityScore}/10 · ${pickupAnalysis.common.safetyRating}`
+            : `${pickupAnalysis.sequential.feasibilityScore}/10 · ${pickupAnalysis.sequential.safetyRating}`}
+        </Copy>
       </Card>
       <FareBreakdown group={group} />
       <ErrorText message={state.error} />
@@ -630,7 +662,14 @@ export function ActiveRideScreen({ route, navigation }: Props<'ActiveRide'>) {
         {active ? 'Together,\non your way.' : 'Your shared ride\nis ready.'}
       </Title>
       <RideSummary ride={ride} group={group} />
-      <RouteMap start={pickupName(ride, group)} end={ride.destination.name} />
+      <InteractiveRouteMap
+        pickup={
+          group.pickupMode === 'common' && group.meetingPoint
+            ? group.meetingPoint
+            : ride.pickup
+        }
+        destination={ride.destination}
+      />
       <Card>
         <Heading>{group.booking.option.name} · demo</Heading>
         <Copy>Agreed pickup: {pickupName(ride, group)}</Copy>
@@ -679,7 +718,14 @@ export function CompletedScreen({ route, navigation }: Props<'Completed'>) {
     <Page back>
       <Kicker>Destination reached · demo complete</Kicker>
       <Title>Different routes.{'\n'}One good journey.</Title>
-      <RouteMap start="Shared journey" end={ride.destination.name} />
+      <InteractiveRouteMap
+        pickup={
+          group.pickupMode === 'common' && group.meetingPoint
+            ? group.meetingPoint
+            : ride.pickup
+        }
+        destination={ride.destination}
+      />
       <Card>
         <Heading>{ride.destination.name}</Heading>
         <Copy>

@@ -5,7 +5,7 @@ import {
   NativeStackNavigationProp,
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
-import { Bookmark, History, Settings2, ShieldCheck } from 'lucide-react-native';
+import { Bookmark, Gauge, History, Settings2, ShieldCheck } from 'lucide-react-native';
 import { RootParams } from '../navigation/types';
 import {
   Avatar,
@@ -143,6 +143,16 @@ export function ProfileScreen() {
         onPress={() => goMain(navigation, 'Rides')}
       />
       <Choice
+        icon={Gauge}
+        label="Routing & API Limits"
+        detail={
+          state.apiQuota.googleMapsDemoMode
+            ? '🔵 Google Maps Demo Active · Tap to view limits'
+            : '🛡️ Safe Mode (OSRM Active) · View API Quotas'
+        }
+        onPress={() => navigation.navigate('ApiQuota')}
+      />
+      <Choice
         icon={Settings2}
         label="Settings & demo controls"
         onPress={() => navigation.navigate('Settings')}
@@ -221,6 +231,11 @@ export function SettingsScreen({
           are required. Demo messages stay on this device in memory.
         </Copy>
       </Card>
+      <Button
+        secondary
+        label="Routing & Google Maps API Limits"
+        onPress={() => navigation.navigate('ApiQuota')}
+      />
       <Button
         secondary
         label="Help & Safety"

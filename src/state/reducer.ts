@@ -1,10 +1,18 @@
-import { demoProfile, getLocation, vehicleOptions } from '../data/fixtures';
+import {
+  demoProfile,
+  getLocation,
+  initialQuotaUsage,
+  vehicleOptions,
+} from '../data/fixtures';
 import {
   AppState,
   ChatMessage,
   DemoScenario,
+  Location,
+  PickupArrangement,
   RideDraft,
   RideRequest,
+  RouteGeometry,
   Student,
 } from '../types/domain';
 import {
@@ -14,6 +22,9 @@ import {
   validateDraft,
 } from '../services/journey';
 import { demoMatchingService } from '../services/matching';
+import { computeOfflineRoute } from '../services/routing';
+import { comparePickupArrangements } from '../services/pickupOptimization';
+import { recordQuotaCall } from '../services/apiQuota';
 
 export function initialDraft(now = new Date()): RideDraft {
   const tomorrow = new Date(now);
@@ -29,20 +40,29 @@ export function initialDraft(now = new Date()): RideDraft {
     flexibility: 30,
   };
 }
+
 export const initialState = (): AppState => ({
   profile: demoProfile,
   signedIn: false,
   draft: initialDraft(),
   rides: [],
   groups: [],
+  customPlaces: [],
   scenario: 'normal',
   notifications: false,
   savedPlaces: ['campus', 'airport'],
   reports: [],
+  apiQuota: initialQuotaUsage,
 });
+
 export type Action =
   | { type: 'SIGN_IN'; profile: Student }
   | { type: 'DRAFT'; patch: Partial<RideDraft> }
+  | {
+      type: 'SELECT_PLACE';
+      field: 'pickupId' | 'destinationId';
+      location: Location;
+    }
   | { type: 'SEARCH'; id: string; now: string }
   | { type: 'SEARCH_DONE'; rideId: string; now: string }
   | { type: 'REMATCH'; rideId: string; flexibility?: RideDraft['flexibility'] }
@@ -64,6 +84,28 @@ export type Action =
   | { type: 'NOTIFICATIONS'; enabled: boolean }
   | { type: 'SAVE'; locationId: string }
   | { type: 'REPORT'; text: string; rideId?: string; id: string; now: string }
+  | {
+      type: 'SET_DEMO_MODE';
+      enabled: boolean;
+      timeoutMinutes?: number;
+    }
+  | {
+      type: 'RECORD_API_CALL';
+      callType:
+        | 'maps_load'
+        | 'places_autocomplete'
+        | 'places_details'
+        | 'directions'
+        | 'osrm'
+        | 'offline';
+    }
+  | { type: 'RESET_API_QUOTA' }
+  | { type: 'SET_ROUTE'; rideId: string; route: RouteGeometry }
+  | {
+      type: 'SET_PICKUP_ARRANGEMENT';
+      rideId: string;
+      arrangement: PickupArrangement;
+    }
   | { type: 'CLEAR_ERROR' }
   | { type: 'RESET' };
 
@@ -77,18 +119,63 @@ function event(text: string, now: string, id: string): ChatMessage {
     system: true,
   };
 }
+
 export function appReducer(state: AppState, action: Action): AppState {
   const reject = (error: string) => ({ ...state, error });
+
   if (action.type === 'CLEAR_ERROR') {
     return { ...state, error: undefined };
   }
+
   if (action.type === 'RESET') {
     return {
       ...initialState(),
       profile: state.profile,
       signedIn: state.signedIn,
+      apiQuota: {
+        ...initialQuotaUsage,
+        googleMapsDemoMode: state.apiQuota.googleMapsDemoMode,
+      },
     };
   }
+
+  if (action.type === 'SET_DEMO_MODE') {
+    const timeout = action.timeoutMinutes ?? state.apiQuota.autoTimeoutMinutes;
+    const expiresAt = action.enabled
+      ? new Date(Date.now() + timeout * 60000).toISOString()
+      : undefined;
+
+    return {
+      ...state,
+      apiQuota: {
+        ...state.apiQuota,
+        googleMapsDemoMode: action.enabled,
+        demoModeExpiresAt: expiresAt,
+        autoTimeoutMinutes: timeout,
+        lastCallProvider: action.enabled
+          ? 'Google Maps Platform (Demo Mode Activated)'
+          : 'OSRM / OpenStreetMap (Safe Free Mode)',
+      },
+    };
+  }
+
+  if (action.type === 'RECORD_API_CALL') {
+    return {
+      ...state,
+      apiQuota: recordQuotaCall(state.apiQuota, action.callType),
+    };
+  }
+
+  if (action.type === 'RESET_API_QUOTA') {
+    return {
+      ...state,
+      apiQuota: {
+        ...initialQuotaUsage,
+        googleMapsDemoMode: state.apiQuota.googleMapsDemoMode,
+      },
+    };
+  }
+
   if (action.type === 'SIGN_IN') {
     if (
       !action.profile.name.trim() ||
@@ -107,6 +194,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       error: undefined,
     };
   }
+
   if (action.type === 'DRAFT') {
     return {
       ...state,
@@ -114,14 +202,43 @@ export function appReducer(state: AppState, action: Action): AppState {
       error: undefined,
     };
   }
+
+  if (action.type === 'SELECT_PLACE') {
+    const location = action.location;
+    const point = location.coordinate;
+    if (
+      !location.id ||
+      !location.name.trim() ||
+      !point ||
+      !Number.isFinite(point.latitude) ||
+      Math.abs(point.latitude) > 90 ||
+      !Number.isFinite(point.longitude) ||
+      Math.abs(point.longitude) > 180 ||
+      getLocation(location.id)
+    ) {
+      return reject('Choose a valid place or map point.');
+    }
+    return {
+      ...state,
+      customPlaces: [
+        ...state.customPlaces.filter(item => item.id !== location.id),
+        location,
+      ],
+      draft: { ...state.draft, [action.field]: location.id },
+      error: undefined,
+    };
+  }
+
   if (action.type === 'SCENARIO') {
     return { ...state, scenario: action.scenario };
   }
+
   if (action.type === 'NOTIFICATIONS') {
     return { ...state, notifications: action.enabled };
   }
+
   if (action.type === 'SAVE') {
-    return getLocation(action.locationId)
+    return getLocation(action.locationId, state.customPlaces)
       ? {
           ...state,
           savedPlaces: state.savedPlaces.includes(action.locationId)
@@ -130,6 +247,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         }
       : reject('That demo place is unavailable.');
   }
+
   if (action.type === 'REPORT') {
     if (!action.text.trim()) {
       return reject('Describe the issue before saving a report.');
@@ -148,22 +266,36 @@ export function appReducer(state: AppState, action: Action): AppState {
       error: undefined,
     };
   }
+
   if (action.type === 'SEARCH') {
     if (state.rides.some(ride => isOpen(ride.status))) {
       return reject(
         'Resume or cancel your existing request before creating another.',
       );
     }
-    const error = validateDraft(state.draft, Date.parse(action.now));
+    const error = validateDraft(
+      state.draft,
+      Date.parse(action.now),
+      state.customPlaces,
+    );
     if (error) {
       return reject(error);
     }
-    const pickup = getLocation(state.draft.pickupId);
-    const destination = getLocation(state.draft.destinationId);
+    const pickup = getLocation(state.draft.pickupId, state.customPlaces);
+    const destination = getLocation(
+      state.draft.destinationId,
+      state.customPlaces,
+    );
     const departure = departureFromDraft(state.draft);
     if (!pickup || !destination || !departure) {
       return reject('Choose valid journey details.');
     }
+
+    const route =
+      pickup.coordinate && destination.coordinate
+        ? computeOfflineRoute([pickup.coordinate, destination.coordinate])
+        : undefined;
+
     const ride: RideRequest = {
       id: action.id,
       userId: state.profile.id,
@@ -174,14 +306,17 @@ export function appReducer(state: AppState, action: Action): AppState {
       createdAt: action.now,
       status: 'SEARCHING',
       matches: [],
+      route,
     };
     return { ...state, rides: [...state.rides, ride], error: undefined };
   }
+
   const ride = state.rides.find(item => item.id === action.rideId);
   if (!ride) {
     return reject('This demo ride is unavailable. Return to Home.');
   }
   const group = state.groups.find(item => item.id === ride.groupId);
+
   function update(nextRide: RideRequest, nextGroup = group): AppState {
     return {
       ...state,
@@ -196,6 +331,16 @@ export function appReducer(state: AppState, action: Action): AppState {
         : state.groups,
     };
   }
+
+  if (action.type === 'SET_ROUTE') {
+    return update({ ...ride, route: action.route });
+  }
+
+  if (action.type === 'SET_PICKUP_ARRANGEMENT') {
+    if (!group) return state;
+    return update(ride, { ...group, pickupArrangement: action.arrangement });
+  }
+
   if (action.type === 'SEARCH_DONE') {
     if (!['SEARCHING', 'REMATCHING'].includes(ride.status)) {
       return state;
@@ -210,6 +355,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       status: matches.length ? 'MATCH_FOUND' : 'NO_MATCH',
     });
   }
+
   if (action.type === 'REMATCH') {
     if (!canTransition(ride.status, 'REMATCHING')) {
       return reject('This request cannot be searched again.');
@@ -221,6 +367,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       flexibility: action.flexibility ?? ride.flexibility,
     });
   }
+
   if (action.type === 'JOIN') {
     if (
       !canTransition(ride.status, 'WAITING_FOR_ACCEPTANCE') ||
@@ -230,6 +377,7 @@ export function appReducer(state: AppState, action: Action): AppState {
     }
     return update({ ...ride, status: 'WAITING_FOR_ACCEPTANCE' });
   }
+
   if (action.type === 'ACCEPT_DEMO') {
     if (
       !canTransition(ride.status, 'GROUP_FORMED') ||
@@ -249,6 +397,26 @@ export function appReducer(state: AppState, action: Action): AppState {
     ) {
       return reject('The demo group needs 2–4 distinct riders.');
     }
+
+    // Evaluate practical pickup arrangement
+    const pickupAnalysis = comparePickupArrangements(
+      ride.pickup,
+      ride.destination,
+      members,
+    );
+    const chosenArrangement = pickupAnalysis.common;
+    const meetingPointLoc = chosenArrangement.meetingPointCoordinate
+      ? {
+          id: 'meeting-point',
+          name: chosenArrangement.meetingPointName || 'Common Meeting Point',
+          area: 'Agreed Group Pickup Zone',
+          kind: 'campus' as const,
+          corridor: ride.destination.corridor,
+          coordinate: chosenArrangement.meetingPointCoordinate,
+          isPickupSuitable: true,
+        }
+      : undefined;
+
     const groupId = `group-${ride.id}`;
     return update(
       { ...ride, status: 'GROUP_FORMED', groupId },
@@ -257,6 +425,8 @@ export function appReducer(state: AppState, action: Action): AppState {
         rideId: ride.id,
         members,
         pickupMode: 'common',
+        pickupArrangement: chosenArrangement,
+        meetingPoint: meetingPointLoc,
         status: 'GROUP_FORMED',
         messages: [
           event(
@@ -270,7 +440,9 @@ export function appReducer(state: AppState, action: Action): AppState {
             id: `${groupId}-hello`,
             senderId: members[1].id,
             sender: members[1].name,
-            text: 'Shall we meet at the campus main gate?',
+            text: chosenArrangement.meetingPointName
+              ? `Shall we meet at ${chosenArrangement.meetingPointName}?`
+              : 'Shall we meet at the campus main gate?',
             timestamp: action.now,
             system: false,
           },
@@ -278,6 +450,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       },
     );
   }
+
   if (action.type === 'LEAVE') {
     if (!canTransition(ride.status, 'CANCELLED')) {
       return reject('This ride is already finished.');
@@ -302,6 +475,7 @@ export function appReducer(state: AppState, action: Action): AppState {
         : undefined,
     );
   }
+
   if (
     !group ||
     !group.members.some(member => member.id === state.profile.id) ||
@@ -311,6 +485,7 @@ export function appReducer(state: AppState, action: Action): AppState {
   ) {
     return reject('Join a formed carpool to use this action.');
   }
+
   if (action.type === 'PICKUP') {
     if (ride.status !== 'GROUP_FORMED') {
       return reject('Pickup arrangements are locked after booking.');
@@ -318,16 +493,26 @@ export function appReducer(state: AppState, action: Action): AppState {
     if (group.pickupMode === action.mode) {
       return state;
     }
+
+    const analysis = comparePickupArrangements(
+      ride.pickup,
+      ride.destination,
+      group.members,
+    );
+    const nextArrangement =
+      action.mode === 'common' ? analysis.common : analysis.sequential;
+
     return update(ride, {
       ...group,
       pickupMode: action.mode,
+      pickupArrangement: nextArrangement,
       messages: [
         ...group.messages,
         event(
           `Pickup changed to ${
             action.mode === 'common'
-              ? 'the common meeting point'
-              : 'sequential pickups'
+              ? `the common meeting point (${nextArrangement.meetingPointName ?? 'Campus Main Gate'})`
+              : 'sequential pickups (stops ordered by road progression)'
           }.`,
           action.now,
           `${ride.id}-pickup-${group.messages.length}`,
@@ -335,6 +520,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       ],
     });
   }
+
   if (action.type === 'MESSAGE') {
     if (ride.status === 'COMPLETED') {
       return reject('Completed chats are read-only.');
@@ -361,6 +547,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       ],
     });
   }
+
   if (action.type === 'DELAY') {
     if (ride.status !== 'GROUP_FORMED') {
       return reject('Departure changes are locked after booking.');
@@ -383,6 +570,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       },
     );
   }
+
   if (action.type === 'BOOK') {
     const option = vehicleOptions.find(item => item.id === action.optionId);
     if (
@@ -410,6 +598,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       },
     );
   }
+
   if (action.type === 'START' || action.type === 'COMPLETE') {
     const status = action.type === 'START' ? 'IN_PROGRESS' : 'COMPLETED';
     if (!canTransition(ride.status, status) || !group.booking) {
@@ -433,5 +622,6 @@ export function appReducer(state: AppState, action: Action): AppState {
       },
     );
   }
+
   return state;
 }
